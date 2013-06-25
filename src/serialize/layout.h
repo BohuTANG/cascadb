@@ -59,7 +59,7 @@ public:
     // Blocking read
     // Read from a relative offset from the beginning of block
     // and get n bytes, the area should not out of bounds
-    Block* read(bid_t bid, uint32_t offset, uint32_t size);
+    Block* read(bid_t bid, uint32_t offset, uint32_t size, uint16_t subblock_crc);
 
     // Initialize a read operation
     void async_read(bid_t bid, Block** block, Callback *cb);

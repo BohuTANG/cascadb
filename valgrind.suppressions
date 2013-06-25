@@ -1,0 +1,12 @@
+{
+    aio_submit_ubuntu
+    Memcheck:Param
+    io_submit(PWRITE)
+    fun:io_submit
+}
+
+{
+    stl_rb_tree_confused_ubuntu
+    Memcheck:Addr8
+    fun:_ZSt18_Rb_tree_incrementPSt18_Rb_tree_node_base
+}

@@ -75,6 +75,11 @@ public:
     {
     }
 
+    const char* start()
+    {
+        return block_->start();
+    }
+
     char *addr()
     {
         return (char *)block_->start() + pos();
@@ -138,6 +143,11 @@ public:
     BlockWriter(Block* block)
     : block_(block), offset_(0)
     {
+    }
+
+    const char *start()
+    {
+        return block_->start();
     }
 
     char *addr()

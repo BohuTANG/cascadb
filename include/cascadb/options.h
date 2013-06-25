@@ -14,8 +14,9 @@ class Directory;
 class Comparator;
 
 enum Compress {
-    kNoCompress,   // No compression
-    kSnappyCompress  // Google's Snappy, used in leveldb
+    kNoCompress,      // No compression
+    kSnappyCompress,  // Google's Snappy, used in leveldb
+    kQuicklzCompress  // Quicklz 1.5 final
 };
 
 class Options {

@@ -34,14 +34,7 @@ bool Tree::init()
         return false;
     }
 
-    switch(options_.compress) {
-    case kNoCompress:
-        break;
-    case kSnappyCompress:
-        compressor_ = new SnappyCompressor();
-        break;
-    }
-
+    compressor_ = new Compressor(options_.compress);
     node_factory_ = new TreeNodeFactory(this);
     if (!cache_->add_table(table_name_, node_factory_, layout_))  {
         LOG_ERROR("init table in cache error");

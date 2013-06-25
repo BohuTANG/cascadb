@@ -69,6 +69,8 @@ static bool FLAGS_use_existing_db = false;
 // Use the db with the following name.
 static const char* FLAGS_db = NULL;
 
+static enum Compress FLAGS_method = kSnappyCompress;
+
 
 // Helper for quickly generating random values.
 class RandomGenerator {
@@ -301,33 +303,45 @@ private:
     fprintf(stdout, "RawSize:    %.1f MB (estimated)\n",
             ((static_cast<int64_t>(kKeySize + FLAGS_value_size) * num_)
              / 1048576.0));
-#ifdef HAS_SNAPPY
-    fprintf(stdout, "FileSize:   %.1f MB (estimated)\n",
+    if (FLAGS_method != kNoCompress) 
+    fprintf(stdout, "filesize:   %.1f MB (estimated)\n",
             (((kKeySize + FLAGS_value_size * FLAGS_compression_ratio) * num_)
              / 1048576.0));
-#else
-    fprintf(stdout, "FileSize:   %.1f MB (estimated, compression disabled)\n",
+    else
+    fprintf(stdout, "filesize:   %.1f MB (estimated, compression disabled)\n",
             (((kKeySize + FLAGS_value_size) * num_)
              / 1048576.0));
-#endif
     PrintWarnings();
     fprintf(stdout, "------------------------------------------------\n");
   }
 
   void PrintWarnings() {
+      if (FLAGS_method != kNoCompress) {
+          switch (FLAGS_method) {
+              case kSnappyCompress:
+                  fprintf(stdout,
+                          "Compression: Snappy\n");
+                  break;
+              case kQuicklzCompress:
+                  fprintf(stdout,
+                          "Compression: Quicklz\n");
+                  break;
+              default:break;
+          }
+      } else 
+          fprintf(stdout,
+                  "WARNING: Snappy&Quicklz compression is disabled\n");
 #if defined(__GNUC__) && !defined(__OPTIMIZE__)
-    fprintf(stdout,
-            "WARNING: Optimization is disabled: benchmarks unnecessarily slow\n"
-            );
+      fprintf(stdout,
+              "WARNING: Optimization is disabled: benchmarks unnecessarily slow\n"
+             );
 #endif
+
 #ifndef NDEBUG
     fprintf(stdout,
             "WARNING: Assertions are enabled; benchmarks unnecessarily slow\n");
 #endif
-#ifndef HAS_SNAPPY
-    fprintf(stdout,
-            "WARNING: Snappy compression is disabled\n");
-#endif
+
 #ifndef HAS_LIBAIO
     fprintf(stdout,
             "WARNING: Linux AIO is disabled, Posix AIO (simulate AIO with user threads) is used instead\n");
@@ -536,9 +550,7 @@ private:
     Options opts;
     opts.dir = directory_;
     opts.comparator = comparator_;
-#ifdef HAS_SNAPPY
     opts.compress = kSnappyCompress;
-#endif
     if (FLAGS_cache_size) {
         opts.cache_limit = FLAGS_cache_size;
     }
@@ -661,6 +673,13 @@ int main(int argc, char** argv)
             FLAGS_value_size = n;
         } else if(strncmp(argv[i], "--db=", 5) == 0) {
             FLAGS_db = argv[i] + 5;
+        } else if(strncmp(argv[i], "--rowformat=", 9) == 0) {
+            if (strcmp(argv[i] + strlen("--rowformat="), "snappy") == 0)
+                FLAGS_method = kSnappyCompress;
+            else if (strcmp(argv[i] + strlen("--rowformat="), "quicklz") == 0)
+                FLAGS_method = kQuicklzCompress;
+            else if (strcmp(argv[i] + strlen("--rowformat="), "no") == 0)
+                FLAGS_method = kNoCompress;
         } else {
             cerr << "Invalid flag '" << argv[i] << "'" << endl;
             exit(1);

@@ -667,7 +667,6 @@ bool InnerNode::load_msgbuf(int idx)
     uint32_t length;
     uint32_t uncompressed_length;
     uint16_t expected_crc;
-    uint16_t actual_crc;
     if (idx == 0) {
         offset = first_msgbuf_offset_;
         length = first_msgbuf_length_;
@@ -680,22 +679,10 @@ bool InnerNode::load_msgbuf(int idx)
         expected_crc = pivots_[idx-1].crc;
     }
 
-    Block* block = tree_->layout_->read(nid_, offset, length);
+    Block* block = tree_->layout_->read(nid_, offset, length, expected_crc);
     if (block == NULL) {
         LOG_ERROR("read msgbuf from layout error " << " nid " << nid_ << ", idx " << idx
                 << ", offset " << offset << ", length " << length);
-        return false;
-    }
-
-    actual_crc = crc16(block->start(), length);
-    if (actual_crc != expected_crc) {
-        LOG_ERROR("msgbuf crc  error " << " nid " << nid_ << ", idx " << idx
-                << ", expected_crc " << expected_crc
-                << ", actual_crc " << actual_crc
-                << ", offset " << offset 
-                << ", length " << length);
-
-        tree_->layout_->destroy(block);
         return false;
     }
 
@@ -1460,24 +1447,12 @@ bool LeafNode::load_bucket(size_t idx)
     uint32_t offset = buckets_info_[idx].offset;
     uint32_t length = buckets_info_[idx].length;
     uint32_t uncompressed_length = buckets_info_[idx].uncompressed_length;
+    uint16_t expected_crc = buckets_info_[idx].crc;
 
-    Block* block = tree_->layout_->read(nid_, offset, length);
+    Block* block = tree_->layout_->read(nid_, offset, length, expected_crc);
     if (block == NULL) {
         LOG_ERROR("read bucket error " << " nid " << nid_ << ", idx " << idx
             << ", offset " << offset << ", length " << length);
-        return false;
-    }
-    
-    // do bucket crc checking
-    uint16_t expected_crc = buckets_info_[idx].crc;
-    uint16_t actual_crc = crc16(block->start(), length);
-    
-    if (expected_crc != actual_crc) {
-        LOG_ERROR("bucket crc checking error " << " nid " << nid_ << ", idx " << idx
-            << ", offset " << offset << ", length " << length
-            << ", expected_crc " << expected_crc << " ,actual_crc " << actual_crc);
-
-        tree_->layout_->destroy(block);
         return false;
     }
 

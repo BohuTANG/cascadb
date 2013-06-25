@@ -15,3 +15,6 @@
 #CMake libraries
 bin/*
 build/*
+
+#Others
+tags

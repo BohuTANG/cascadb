@@ -124,23 +124,23 @@ Block* Layout::read(bid_t bid, bool skeleton_only)
     uint16_t actual_crc;
 
     if (skeleton_only) {
-	expected_crc = meta.skeleton_crc;
-	actual_crc = crc16(block->buffer().data(), meta.skeleton_size);
+        expected_crc = meta.skeleton_crc;
+        actual_crc = crc16(block->buffer().data(), meta.skeleton_size);
     } else {
-	expected_crc = meta.crc;
-	// here buffer().size is aligned, not meta.total_size
-	actual_crc = crc16(block->buffer().data(), block->buffer().size());
+        expected_crc = meta.crc;
+        // here buffer().size is aligned, not meta.total_size
+        actual_crc = crc16(block->buffer().data(), block->buffer().size());
     }
 
     if (expected_crc != actual_crc && expected_crc != 0) {
-	LOG_ERROR("crc error, bid " << hex << bid << dec
-		<< ", offset " << meta.offset
-		<< ", expected_crc " << expected_crc
-		<< ", actual_crc " << actual_crc
-		<< ", skeleton_only " << skeleton_only);
+        LOG_ERROR("crc error, bid " << hex << bid << dec
+                << ", offset " << meta.offset
+                << ", expected_crc " << expected_crc
+                << ", actual_crc " << actual_crc
+                << ", skeleton_only " << skeleton_only);
 
-	destroy(block);
-	return NULL;
+        destroy(block);
+        return NULL;
     }
 
     LOG_TRACE("read block ok,  bid " << hex << bid << dec 
@@ -149,7 +149,7 @@ Block* Layout::read(bid_t bid, bool skeleton_only)
     return block;
 }
 
-Block* Layout::read(bid_t bid, uint32_t offset, uint32_t size)
+Block* Layout::read(bid_t bid, uint32_t offset, uint32_t size, uint16_t subblock_crc)
 {
     BlockMeta meta;
     if (!get_block_meta(bid, meta)) {
@@ -162,10 +162,22 @@ Block* Layout::read(bid_t bid, uint32_t offset, uint32_t size)
 
     Block *block;
     if (!read_block(meta, offset, size, &block)) {
-        LOG_ERROR("read block error, bid " << hex << bid << dec
+        LOG_ERROR("read subblock error, bid " << hex << bid << dec
                   << ", offset " << (meta.offset + offset)
                   << ", size " << size
-                  << ", crc " << meta.crc);
+                  << ", subblock crc " << subblock_crc);
+        return NULL;
+    }
+
+    uint16_t actual_crc = crc16(block->start(), size);
+    if (actual_crc != subblock_crc) {
+        LOG_ERROR("one msgbuf crc  error " << " bid " << bid
+                << ", expected_crc " << subblock_crc 
+                << ", actual_crc " << actual_crc
+                << ", offset " << offset 
+                << ", length " << size);
+
+        destroy(block);
         return NULL;
     }
 
@@ -226,7 +238,7 @@ void Layout::handle_async_read(AsyncReadReq *req, AIOStatus status)
             req->cb->exec(true);
         } else {
             LOG_ERROR("read block crc" << hex << req->bid << dec << req->meta.crc << " error");
-            free_buffer(req->buffer);
+            destroy(*req->block);
             req->cb->exec(false);
         }
     } else {
@@ -345,6 +357,7 @@ bool Layout::load_superblock()
         LOG_ERROR("alloc_aligned_buffer error, size " << SUPER_BLOCK_SIZE);
         return false;
     }
+    memset((void*)buffer.data(), 0, buffer.size());
 
     if (!read_data(0, buffer)) {
         LOG_ERROR("try to read 1st superblock error");
@@ -372,6 +385,7 @@ bool Layout::load_2nd_superblock()
         LOG_ERROR("alloc_aligned_buffer error, size " << SUPER_BLOCK_SIZE);
         return false;
     }
+    memset((void*)buffer.data(), 0, buffer.size());
 
     if (!read_data(SUPER_BLOCK_SIZE, buffer)) {
         LOG_ERROR("try to read 2nd superblock error");
@@ -399,6 +413,7 @@ bool Layout::flush_superblock()
         LOG_ERROR("alloc_aligned_buffer fail, size " << SUPER_BLOCK_SIZE);
         return false;
     }
+    memset((void*)buffer.data(), 0, buffer.size());
 
     Block block(buffer, 0, 0);
     BlockWriter writer(&block);
@@ -525,13 +540,20 @@ bool Layout::read_superblock(BlockReader& reader)
         if (!read_block_meta(superblock_->index_block_meta, reader)) return false;
     }
 
-    if (!reader.readUInt64(&(superblock_->magic_number1))) return false;
-    if (superblock_->magic_number0 != SUPER_BLOCK_MAGIC_NUM ||
-            superblock_->magic_number0 != superblock_->magic_number1) {
-         LOG_ERROR("read superblock " "magic_num0:"<< superblock_->magic_number0 
-                  << ", magic_num1:" <<  superblock_->magic_number1);
-         return false;
+    uint16_t expected_crc, actual_crc;
+    uint32_t super_size = reader.pos();
+
+    if (!reader.readUInt16(&expected_crc)) return false;
+    actual_crc= crc16(reader.start(), super_size); 
+    if (actual_crc != expected_crc) {
+        LOG_ERROR("superblock crc  error"
+                << ", expected_crc " << expected_crc
+                << ", actual_crc " << actual_crc
+                << ", length " << super_size);
+
+        return false;
     }
+
     return true;
 }
 
@@ -548,7 +570,9 @@ bool Layout::write_superblock(BlockWriter& writer)
         if (!writer.writeBool(false)) return false;
     }
 
-    if (!writer.writeUInt64(superblock_->magic_number1)) return false;
+    uint16_t crc = crc16(writer.start(), writer.pos());
+    if (!writer.writeUInt16(crc)) return false;
+
     return true;
 }
 
@@ -961,6 +985,7 @@ Block* Layout::create(size_t size)
 {
     Slice buffer = alloc_aligned_buffer(size);
     if (buffer.size()) {
+        memset((void*)buffer.data(), 0, buffer.size());
         return new Block(buffer, 0, 0);
     } else {
         return NULL;

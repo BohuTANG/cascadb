@@ -29,6 +29,8 @@ ENDIF("${isSystemDir}" STREQUAL "-1")
 add_definitions("-g -O2 -Wall")
 
 include_directories(
+${PROJECT_SOURCE_DIR}/thirdparty/snappy
+${PROJECT_SOURCE_DIR}/thirdparty/quicklz
 ${PROJECT_SOURCE_DIR}/include
 ${PROJECT_SOURCE_DIR}/src
 )
@@ -38,17 +40,6 @@ ${PROJECT_SOURCE_DIR}/lib
 )
 
 # check dependencies
-
-# Check Snappy
-include(${CMAKE_SOURCE_DIR}/cmake/FindSnappy.cmake)
-if (SNAPPY_FOUND)
-    message(STATUS "Find snappy include:${SNAPPY_INCLUDE_DIR} libs:${SNAPPY_LIBRARIES}")
-    add_definitions("-DHAS_SNAPPY")
-    include_directories(${SNAPPY_INCLUDE_DIR})
-    link_libraries(${SNAPPY_LIBRARIES})
-else (SNAPPY_FOUND)
-    message(WARNING "Cannot find snappy, compression is disabled in cascadb")
-endif (SNAPPY_FOUND)
 
 # Check Libaio
 include(${CMAKE_SOURCE_DIR}/cmake/FindLibaio.cmake)
@@ -68,7 +59,7 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 endif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 
 set(CASCADB_LIBS
-pthread m rt dl z
+pthread m rt dl z snappy quicklz 
 )
 
 # Source files
