@@ -21,15 +21,15 @@
 
 namespace cascadb {
 
-#define BLOCK_META_SIZE (64 + 32 + 32 + 16 + 16) / 8
+#define BLOCK_META_SIZE (64 + 32 + 32 + CRC_SIZE*8 + CRC_SIZE*8) / 8
 
 // Metadata for block, stored inside index
 struct BlockMeta {
     uint64_t    offset;             // start offset in file
     uint32_t    skeleton_size;      // size of node skeleton
     uint32_t    total_size;         // total size in bytes
-    uint16_t    crc;                // crc of block data
-    uint16_t    skeleton_crc;       // crc of skeleton data
+    uint32_t    crc;                // crc of block data
+    uint32_t    skeleton_crc;       // crc of skeleton data
 };
 
 // Storage layout, read blocks from file and write blocks into file
@@ -59,7 +59,7 @@ public:
     // Blocking read
     // Read from a relative offset from the beginning of block
     // and get n bytes, the area should not out of bounds
-    Block* read(bid_t bid, uint32_t offset, uint32_t size, uint16_t subblock_crc);
+    Block* read(bid_t bid, uint32_t offset, uint32_t size, uint32_t subblock_crc);
 
     // Initialize a read operation
     void async_read(bid_t bid, Block** block, Callback *cb);

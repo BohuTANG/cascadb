@@ -10,7 +10,7 @@
 #include "serialize/layout.h"
 #include "util/logger.h"
 #include "util/bits.h"
-#include "util/crc16.h"
+#include "util/crc.h"
 
 using namespace std;
 using namespace cascadb;
@@ -120,16 +120,16 @@ Block* Layout::read(bid_t bid, bool skeleton_only)
         return NULL;
     }
 
-    uint16_t expected_crc;
-    uint16_t actual_crc;
+    uint32_t expected_crc;
+    uint32_t actual_crc;
 
     if (skeleton_only) {
         expected_crc = meta.skeleton_crc;
-        actual_crc = crc16(block->buffer().data(), meta.skeleton_size);
+        actual_crc = crc32(block->buffer().data(), meta.skeleton_size);
     } else {
         expected_crc = meta.crc;
         // here buffer().size is aligned, not meta.total_size
-        actual_crc = crc16(block->buffer().data(), block->buffer().size());
+        actual_crc = crc32(block->buffer().data(), block->buffer().size());
     }
 
     if (expected_crc != actual_crc && expected_crc != 0) {
@@ -149,7 +149,7 @@ Block* Layout::read(bid_t bid, bool skeleton_only)
     return block;
 }
 
-Block* Layout::read(bid_t bid, uint32_t offset, uint32_t size, uint16_t subblock_crc)
+Block* Layout::read(bid_t bid, uint32_t offset, uint32_t size, uint32_t subblock_crc)
 {
     BlockMeta meta;
     if (!get_block_meta(bid, meta)) {
@@ -169,7 +169,7 @@ Block* Layout::read(bid_t bid, uint32_t offset, uint32_t size, uint16_t subblock
         return NULL;
     }
 
-    uint16_t actual_crc = crc16(block->start(), size);
+    uint32_t actual_crc = crc32(block->start(), size);
     if (actual_crc != subblock_crc) {
         LOG_ERROR("one msgbuf crc  error " << " bid " << bid
                 << ", expected_crc " << subblock_crc 
@@ -229,10 +229,10 @@ void Layout::handle_async_read(AsyncReadReq *req, AIOStatus status)
         LOG_TRACE("read block bid " << hex << req->bid << dec 
                   << " at offset " << req->meta.offset << " ok");
 
-        uint16_t crc;
+        uint32_t crc;
 
         *(req->block) = new Block(req->buffer, 0, req->meta.total_size);
-        crc = crc16(req->buffer.data(), req->buffer.size());
+        crc = crc32(req->buffer.data(), req->buffer.size());
 
         if (crc == req->meta.crc) {
             req->cb->exec(true);
@@ -263,8 +263,8 @@ void Layout::async_write(bid_t bid, Block *block, uint32_t skeleton_size, Callba
     req->meta.total_size = block->size();
     req->buffer = block->buffer();
     req->meta.offset = get_offset(req->buffer.size());
-    req->meta.crc = crc16(req->buffer.data(), req->buffer.size());
-    req->meta.skeleton_crc = crc16(block->start(), skeleton_size);
+    req->meta.crc = crc32(req->buffer.data(), req->buffer.size());
+    req->meta.skeleton_crc = crc32(block->start(), skeleton_size);
 
     Callback *ncb = new Callback(this, &Layout::handle_async_write, req);
 
@@ -540,11 +540,11 @@ bool Layout::read_superblock(BlockReader& reader)
         if (!read_block_meta(superblock_->index_block_meta, reader)) return false;
     }
 
-    uint16_t expected_crc, actual_crc;
+    uint32_t expected_crc, actual_crc;
     uint32_t super_size = reader.pos();
 
-    if (!reader.readUInt16(&expected_crc)) return false;
-    actual_crc= crc16(reader.start(), super_size); 
+    if (!reader.readUInt32(&expected_crc)) return false;
+    actual_crc= crc32(reader.start(), super_size); 
     if (actual_crc != expected_crc) {
         LOG_ERROR("superblock crc  error"
                 << ", expected_crc " << expected_crc
@@ -570,8 +570,8 @@ bool Layout::write_superblock(BlockWriter& writer)
         if (!writer.writeBool(false)) return false;
     }
 
-    uint16_t crc = crc16(writer.start(), writer.pos());
-    if (!writer.writeUInt16(crc)) return false;
+    uint32_t crc = crc32(writer.start(), writer.pos());
+    if (!writer.writeUInt32(crc)) return false;
 
     return true;
 }
@@ -620,8 +620,8 @@ bool Layout::read_block_meta(BlockMeta* meta, BlockReader& reader)
     if (!reader.readUInt64(&(meta->offset))) return false;
     if (!reader.readUInt32(&(meta->skeleton_size))) return false;
     if (!reader.readUInt32(&(meta->total_size))) return false;
-    if (!reader.readUInt16(&(meta->crc))) return false;
-    if (!reader.readUInt16(&(meta->skeleton_crc))) return false;
+    if (!reader.readUInt32(&(meta->crc))) return false;
+    if (!reader.readUInt32(&(meta->skeleton_crc))) return false;
     return true;
 }
 
@@ -630,8 +630,8 @@ bool Layout::write_block_meta(BlockMeta* meta, BlockWriter& writer)
     if (!writer.writeUInt64(meta->offset)) return false;
     if (!writer.writeUInt32(meta->skeleton_size)) return false;
     if (!writer.writeUInt32(meta->total_size)) return false;
-    if (!writer.writeUInt16(meta->crc)) return false;
-    if (!writer.writeUInt16(meta->skeleton_crc)) return false;
+    if (!writer.writeUInt32(meta->crc)) return false;
+    if (!writer.writeUInt32(meta->skeleton_crc)) return false;
     return true;
 }
 

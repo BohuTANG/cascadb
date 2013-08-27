@@ -46,7 +46,7 @@ public:
     // length of msgbuf before compression
     uint32_t    uncompressed_length;
     // crc of msgbuf
-    uint16_t    crc;
+    uint32_t    crc;
 };
 
 class Node {
@@ -400,7 +400,7 @@ protected:
     uint32_t first_msgbuf_offset_;
     uint32_t first_msgbuf_length_;
     uint32_t first_msgbuf_uncompressed_length_;
-    uint16_t first_msgbuf_crc_;
+    uint32_t first_msgbuf_crc_;
     
     std::vector<Pivot> pivots_;
 
@@ -469,7 +469,7 @@ private:
         uint32_t            offset;
         uint32_t            length;
         uint32_t            uncompressed_length;
-        uint16_t            crc;
+        uint32_t            crc;
     };
     size_t                  buckets_info_size_;
 

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <stdlib.h>
 #include "serialize/block.h"
-#include "util/crc16.h"
+#include "util/crc.h"
 
 using namespace cascadb;
 using namespace std;
@@ -24,6 +24,6 @@ TEST(crc16, calc)
     writer.writeUInt32(1234567);
     writer.writeUInt16(12345);
 
-    EXPECT_EQ(cascadb::crc16(writer.start(), writer.pos()), 
-            cascadb::crc16(writer.start(), writer.pos()));
+    EXPECT_EQ(cascadb::crc32(writer.start(), writer.pos()), 
+            cascadb::crc32(writer.start(), writer.pos()));
 }

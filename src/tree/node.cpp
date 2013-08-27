@@ -11,7 +11,7 @@
 #include "tree.h"
 #include "keycomp.h"
 #include "util/logger.h"
-#include "util/crc16.h"
+#include "util/crc.h"
 #include "util/bloom.h"
 
 using namespace std;
@@ -581,7 +581,7 @@ size_t InnerNode::pivot_size(Slice key)
                         4 + // msgbuf offset
                         4 + // msgbuf length
                         4 + // msgbuf uncompressed length
-                        2;// msgbuf crc
+                        CRC_SIZE;// msgbuf crc
 }
 
 size_t InnerNode::bloom_size(int n)
@@ -593,7 +593,7 @@ size_t InnerNode::bloom_size(int n)
 size_t InnerNode::size()
 {
     size_t sz = 0;
-    sz += 1 + 4 + (8 + 4 + 4 + 4 + 2);
+    sz += 1 + 4 + (8 + 4 + 4 + 4 + CRC_SIZE);
     sz += pivots_sz_;
     sz += msgbufsz_;
     return sz;
@@ -602,7 +602,7 @@ size_t InnerNode::size()
 size_t InnerNode::estimated_buffer_size()
 {
     size_t sz = 0;
-    sz += 1 + 4 + (8 + 4 + 4 + 4 + 2);
+    sz += 1 + 4 + (8 + 4 + 4 + 4 + CRC_SIZE);
     // first msgbuf bloom bitsets
     sz += bloom_size(first_msgbuf_->count());
     sz += pivots_sz_;
@@ -636,7 +636,7 @@ bool InnerNode::read_from(BlockReader& reader, bool skeleton_only)
     if (!reader.readUInt32(&first_msgbuf_offset_)) return false;
     if (!reader.readUInt32(&first_msgbuf_length_)) return false;
     if (!reader.readUInt32(&first_msgbuf_uncompressed_length_)) return false;
-    if (!reader.readUInt16(&first_msgbuf_crc_)) return false;
+    if (!reader.readUInt32(&first_msgbuf_crc_)) return false;
     if (!reader.readSlice(first_filter_)) return false;
 
     for (size_t i = 0; i < pn; i++) {
@@ -648,7 +648,7 @@ bool InnerNode::read_from(BlockReader& reader, bool skeleton_only)
         if (!reader.readUInt32(&(pivots_[i].offset))) return false;
         if (!reader.readUInt32(&(pivots_[i].length))) return false;
         if (!reader.readUInt32(&(pivots_[i].uncompressed_length))) return false;
-        if (!reader.readUInt16(&(pivots_[i].crc))) return false;
+        if (!reader.readUInt32(&(pivots_[i].crc))) return false;
         if (!reader.readSlice(pivots_[i].filter)) return false;
     }
 
@@ -666,7 +666,7 @@ bool InnerNode::load_msgbuf(int idx)
     uint32_t offset;
     uint32_t length;
     uint32_t uncompressed_length;
-    uint16_t expected_crc;
+    uint32_t expected_crc;
     if (idx == 0) {
         offset = first_msgbuf_offset_;
         length = first_msgbuf_length_;
@@ -838,7 +838,7 @@ bool InnerNode::write_to(BlockWriter& writer, size_t& skeleton_size)
 {
     // get length of skeleton and reserve space for skeleton
     size_t skeleton_offset = writer.pos();
-    size_t skeleton_length = 1 + 4 + 8 + 4 + 4 + 4 + 2 +
+    size_t skeleton_length = 1 + 4 + 8 + 4 + 4 + 4 + CRC_SIZE +
         bloom_size(first_msgbuf_->count());
 
     for (size_t i = 0; i < pivots_.size(); i++) {
@@ -867,7 +867,7 @@ bool InnerNode::write_to(BlockWriter& writer, size_t& skeleton_size)
     if (!write_msgbuf(writer, first_msgbuf_, buffer)) return false;
     first_msgbuf_length_ = writer.pos() - first_msgbuf_offset_;
     first_msgbuf_uncompressed_length_ = first_msgbuf_->size();
-    first_msgbuf_crc_ = crc16(mb_start, first_msgbuf_length_);
+    first_msgbuf_crc_ = crc32(mb_start, first_msgbuf_length_);
 
     // write rest msgbufs
     for (size_t i = 0; i < pivots_.size(); i++) {
@@ -876,7 +876,7 @@ bool InnerNode::write_to(BlockWriter& writer, size_t& skeleton_size)
         if (!write_msgbuf(writer, pivots_[i].msgbuf, buffer)) return false;
         pivots_[i].length = writer.pos() - pivots_[i].offset;
         pivots_[i].uncompressed_length = pivots_[i].msgbuf->size();
-        pivots_[i].crc = crc16(mb_start, pivots_[i].length);
+        pivots_[i].crc = crc32(mb_start, pivots_[i].length);
     }
 
     if (buffer.size()) {
@@ -896,7 +896,7 @@ bool InnerNode::write_to(BlockWriter& writer, size_t& skeleton_size)
     if (!writer.writeUInt32(first_msgbuf_offset_)) return false;
     if (!writer.writeUInt32(first_msgbuf_length_)) return false;
     if (!writer.writeUInt32(first_msgbuf_uncompressed_length_)) return false;
-    if (!writer.writeUInt16(first_msgbuf_crc_)) return false;
+    if (!writer.writeUInt32(first_msgbuf_crc_)) return false;
 
     // first msgbuf bloom filter
     std::string filter;
@@ -911,7 +911,7 @@ bool InnerNode::write_to(BlockWriter& writer, size_t& skeleton_size)
         if (!writer.writeUInt32(pivots_[i].offset)) return false;
         if (!writer.writeUInt32(pivots_[i].length)) return false;
         if (!writer.writeUInt32(pivots_[i].uncompressed_length)) return false;
-        if (!writer.writeUInt16(pivots_[i].crc)) return false;
+        if (!writer.writeUInt32(pivots_[i].crc)) return false;
 
 	// get the bloom filter bitsets
         pivots_[i].msgbuf->get_filter(&filter);
@@ -1313,7 +1313,7 @@ bool LeafNode::write_to(BlockWriter& writer, size_t& skeleton_size)
         }
         buckets_info_[i].length = writer.pos() - buckets_info_[i].offset;
         buckets_info_[i].uncompressed_length = records_.bucket_length(i);
-        buckets_info_[i].crc = crc16(bkt_buffer, buckets_info_[i].length);
+        buckets_info_[i].crc = crc32(bkt_buffer, buckets_info_[i].length);
     }
     size_t last_pos = writer.pos();
 
@@ -1394,7 +1394,7 @@ void LeafNode::refresh_buckets_info()
 		+ 4 // sizeof(offset)
 		+ 4 // sizeof(length)
 		+ 4 // sizeof(uncomoressed_length)
-		+ 2;// sizeof(crc)
+		+ CRC_SIZE;// sizeof(crc)
     }
 }
 
@@ -1410,12 +1410,12 @@ bool LeafNode::read_buckets_info(BlockReader& reader)
         if (!reader.readUInt32(&(buckets_info_[i].offset))) return false;
         if (!reader.readUInt32(&(buckets_info_[i].length))) return false;
         if (!reader.readUInt32(&(buckets_info_[i].uncompressed_length))) return false;
-        if (!reader.readUInt16(&(buckets_info_[i].crc))) return false;
+        if (!reader.readUInt32(&(buckets_info_[i].crc))) return false;
         buckets_info_size_ += 4 + buckets_info_[i].key.size() 
 		+ 4 // sizeof(offset)
 		+ 4 // sizeof(length)
 		+ 4 // sizeof(uncomoressed_length)
-		+ 2;// sizeof(crc)
+		+ CRC_SIZE;// sizeof(crc)
     }
 
     // init buckets number
@@ -1433,7 +1433,7 @@ bool LeafNode::write_buckets_info(BlockWriter& writer)
         if (!writer.writeUInt32(buckets_info_[i].offset)) return false;
         if (!writer.writeUInt32(buckets_info_[i].length)) return false;
         if (!writer.writeUInt32(buckets_info_[i].uncompressed_length)) return false;
-        if (!writer.writeUInt16(buckets_info_[i].crc)) return false;
+        if (!writer.writeUInt32(buckets_info_[i].crc)) return false;
     }
     return true;
 }
@@ -1447,7 +1447,7 @@ bool LeafNode::load_bucket(size_t idx)
     uint32_t offset = buckets_info_[idx].offset;
     uint32_t length = buckets_info_[idx].length;
     uint32_t uncompressed_length = buckets_info_[idx].uncompressed_length;
-    uint16_t expected_crc = buckets_info_[idx].crc;
+    uint32_t expected_crc = buckets_info_[idx].crc;
 
     Block* block = tree_->layout_->read(nid_, offset, length, expected_crc);
     if (block == NULL) {
