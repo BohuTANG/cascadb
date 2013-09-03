@@ -190,6 +190,11 @@ public:
         lock_.read_lock();
     }
 
+    void read_unlock()
+    {
+        lock_.unlock();
+    }
+
     bool try_read_lock()
     {
         return lock_.try_read_lock();
@@ -202,6 +207,11 @@ public:
     void write_lock()
     {
         lock_.write_lock();
+    }
+
+    void write_unlock()
+    {
+        lock_.unlock();
     }
 
     bool try_write_lock()
@@ -294,8 +304,6 @@ public:
 
     // Find values buffered in this node and all descendants
     virtual bool find(Slice key, Slice& value, InnerNode* parent) = 0;
-    
-    virtual void lock_path(Slice key, std::vector<DataNode*>& path) = 0;
 
 protected:
     Tree            *tree_;
@@ -341,9 +349,9 @@ public:
     
     virtual bool find(Slice key, Slice& value, InnerNode* parent);
     
-    void add_pivot(Slice key, bid_t nid, std::vector<DataNode*>& path);
+    void add_pivot(Slice key, bid_t nid);
     
-    void rm_pivot(bid_t nid, std::vector<DataNode*>& path);
+    void rm_pivot(bid_t bid);
 
     size_t pivot_size(Slice key);
     size_t bloom_size(int n);
@@ -355,8 +363,6 @@ public:
     bool read_from(BlockReader& reader, bool skeleton_only);
     
     bool write_to(BlockWriter& writer, size_t& skeleton_size);
-
-    void lock_path(Slice key, std::vector<DataNode*>& path);
     
 protected:
     friend class LeafNode;
@@ -379,7 +385,7 @@ protected:
 
     void maybe_cascade();
     
-    void split(std::vector<DataNode*>& path);
+    void split(InnerNode *parent);
 
     bool load_msgbuf(int idx);
     bool load_all_msgbuf();
@@ -426,15 +432,13 @@ public:
     bool read_from(BlockReader& reader, bool skeleton_only);
     
     bool write_to(BlockWriter& writer, size_t& skeleton_size);
-
-    void lock_path(Slice key, std::vector<DataNode*>& path);
     
 protected:
     Record to_record(const Msg& msg);
   
-    void split(Slice anchor);
+    void split(InnerNode *parent);
     
-    void merge(Slice anchor);
+    void merge(InnerNode *parent);
     
     // refresh buckets_info_ after buckets_ is modified
     void refresh_buckets_info();

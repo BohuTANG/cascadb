@@ -81,8 +81,8 @@ void InnerNode::init_empty_root()
 
 bool InnerNode::write(const Msg& m)
 {
+    // read lock
     read_lock();
-
     if (status_ == kSkeletonLoaded) {
         load_all_msgbuf();
     }
@@ -90,23 +90,35 @@ bool InnerNode::write(const Msg& m)
     Slice k = m.key;
     insert_msgbuf(m, find_pivot(k));
     set_dirty(true);
-    
+
+    // read unlock
+    read_unlock();
+
     maybe_cascade();
     return true;
 }
 
 bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent){
+    // locks:
+    // parent read-lock is race condiation with cache flush
     read_lock();
+    parent->read_lock();
+    mb->write_lock();
+
+    size_t oldcnt = mb->count();
+    size_t oldsz = mb->size();
+
+    if (oldcnt == 0) {
+        mb->write_unlock();
+        parent->read_unlock();
+        read_unlock();
+        return true;
+    } 
 
     // lazy load
     if (status_ == kSkeletonLoaded) {
         load_all_msgbuf();
     }
-
-    // lock message buffer
-    mb->write_lock();
-    size_t oldcnt = mb->count();
-    size_t oldsz = mb->size();
 
     MsgBuf::Iterator rs, it, end;
     rs = it = mb->begin(); // range start
@@ -131,14 +143,18 @@ bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent){
     mb->clear();
     parent->msgcnt_ = parent->msgcnt_ + mb->count() - oldcnt;
     parent->msgbufsz_ = parent->msgbufsz_ + mb->size() - oldsz;
-
-    // unlock message buffer
-    mb->unlock();
-    // crab walk
-    parent->unlock();
-
     set_dirty(true);
+
+    // unlocks
+    mb->write_unlock();
+    parent->read_unlock();
+    read_unlock();
+
     maybe_cascade();
+
+    if ((pivots_.size() + 1) > tree_->options_.inner_node_children_number) {
+        split(parent);
+    }
     
     return true;
 }
@@ -311,13 +327,16 @@ int InnerNode::find_msgbuf_maxsz()
 
 void InnerNode::maybe_cascade()
 {
+    // read lock
+    read_lock();
+
     int idx = -1;
     if (msgcnt_ >= tree_->options_.inner_node_msg_count) {
         idx = find_msgbuf_maxcnt();
     } else if (size() >= tree_->options_.inner_node_page_size) {
         idx = find_msgbuf_maxsz();
     } else {
-        unlock();
+        read_unlock();
         return;
     }
    
@@ -334,24 +353,26 @@ void InnerNode::maybe_cascade()
     } else {
         node = tree_->load_node(nid, false);
     }
+
+    // read unlock
+    read_unlock();
+
     assert(node);
     node->cascade(b, this);
     node->dec_ref();
 
-    // it's possible to cascade twice
-    // lock is released in child, so it's nescessarty to obtain it again
-    read_lock();
-    if (msgcnt_ >= tree_->options_.inner_node_msg_count ||
-        size() >= tree_->options_.inner_node_page_size) {
-        maybe_cascade();
-    } else {
-        unlock();
+    // root node checking
+    if (this == tree_->root()) {
+        if ((pivots_.size() + 1) > tree_->options_.inner_node_children_number) {
+            split(NULL);
+        }
     }
 }
 
-void InnerNode::add_pivot(Slice key, bid_t nid, std::vector<DataNode*>& path)
+void InnerNode::add_pivot(Slice key, bid_t nid)
 {
-    assert(path.back() == this);
+    // lock
+    write_lock();
 
     if (status_ == kSkeletonLoaded) {
         load_all_msgbuf();
@@ -364,20 +385,16 @@ void InnerNode::add_pivot(Slice key, bid_t nid, std::vector<DataNode*>& path)
     pivots_sz_ += pivot_size(key);
     msgbufsz_ += mb->size();
     set_dirty(true);
-    
-    if (pivots_.size() + 1 > tree_->options_.inner_node_children_number) {
-        split(path);
-    } else {
-        while(path.size()) {
-            path.back()->unlock();
-            path.back()->dec_ref();
-            path.pop_back();
-        }
-    }
+
+    //unlock
+    write_unlock();
 }
 
-void InnerNode::split(std::vector<DataNode*>& path)
+void InnerNode::split(InnerNode *parent)
 {
+    // try lock
+    if (!try_write_lock()) return;
+
     assert(pivots_.size() > 1);
     size_t n = pivots_.size()/2;
     size_t n1 = pivots_.size() - n - 1;
@@ -411,14 +428,9 @@ void InnerNode::split(std::vector<DataNode*>& path)
     msgbufsz_ -= msgbufsz1;
     
     ni->set_dirty(true);
-    ni->dec_ref();
 
-    path.pop_back();
-    unlock();
-    dec_ref();
-    
     // propagation
-    if( path.size() == 0) {
+    if(!parent) {
         // i'm root
         InnerNode *nr = tree_->new_inner_node();
         assert(nr);
@@ -435,22 +447,19 @@ void InnerNode::split(std::vector<DataNode*>& path)
         nr->set_dirty(true);
         
         tree_->pileup(nr);
-        
-        // need not do nr->dec_ref() here
     } else {
-        // propagation
-        InnerNode* parent = (InnerNode*) path.back();
         assert(parent);
-        parent->add_pivot(k, ni->nid_, path);
+        parent->add_pivot(k, ni->nid_);
     }
+
+    // unlock
+    write_unlock();
 }
 
-void InnerNode::rm_pivot(bid_t nid, std::vector<DataNode*>& path)
+void InnerNode::rm_pivot(bid_t nid)
 {
-    // todo free memory of pivot key
-
-    assert(path.back() == this);
-
+    // lock node
+    write_lock();
     if (status_ == kSkeletonLoaded) {
         load_all_msgbuf();
     }
@@ -465,19 +474,11 @@ void InnerNode::rm_pivot(bid_t nid, std::vector<DataNode*>& path)
             first_msgbuf_ = NULL;
             dead_ = true;
 
-            path.pop_back();
-            unlock();
-            dec_ref();
-
-            if (path.size() == 0) {
-                // reach root
+            if (this == tree_->root())
                 tree_->collapse(); 
-            } else {
-                // propagation
-                InnerNode* parent = (InnerNode*) path.back();
-                assert(parent);
-                parent->rm_pivot(nid_, path);
-            }
+
+            // unlock
+            write_unlock();
             return;
         }
 
@@ -487,8 +488,6 @@ void InnerNode::rm_pivot(bid_t nid, std::vector<DataNode*>& path)
 
         pivots_sz_ -= pivot_size(pivots_[0].key);
         pivots_.erase(pivots_.begin());
-
-        // TODO adjst size
     } else {
         vector<Pivot>::iterator it;
         for (it = pivots_.begin(); 
@@ -506,28 +505,17 @@ void InnerNode::rm_pivot(bid_t nid, std::vector<DataNode*>& path)
 
         pivots_sz_ -= pivot_size(it->key);
         pivots_.erase(it);
-
-        // TODO adjust size
     }
-
     set_dirty(true);
 
-    // unlock all parents
-    while (path.size()) {
-        path.back()->unlock();
-        path.back()->dec_ref();
-        path.pop_back();
-    }
+    // unlock 
+    write_unlock();
 }
 
 bool InnerNode::find(Slice key, Slice& value, InnerNode *parent)
 {
     bool ret = false;
     read_lock();
-
-    if (parent) {
-        parent->unlock(); // lock coupling
-    }
 
     int idx = find_pivot(key);
 
@@ -562,16 +550,6 @@ bool InnerNode::find(Slice key, Slice& value, InnerNode *parent)
     ret = ch->find(key, value, this);
     ch->dec_ref();
     return ret;
-}
-
-void InnerNode::lock_path(Slice key, std::vector<DataNode*>& path)
-{
-    int idx = find_pivot(key);
-    DataNode* ch = tree_->load_node(child(idx), false);
-    assert(ch);
-    ch->write_lock();
-    path.push_back(ch);
-    ch->lock_path(key, path);
 }
 
 size_t InnerNode::pivot_size(Slice key)
@@ -987,18 +965,23 @@ LeafNode::~LeafNode()
 
 bool LeafNode::cascade(MsgBuf *mb, InnerNode* parent)
 {
+    // locks:
     write_lock();
+    parent->write_lock();
+    mb->write_lock();
+
+    size_t oldcnt = mb->count();
+    size_t oldsz = mb->size();
+    if (oldcnt == 0) {
+        mb->write_unlock();
+        parent->write_unlock();
+        write_unlock();
+        return true;
+    }
 
     if (status_ == kSkeletonLoaded) {
         load_all_buckets();
     }
-
-    // lock message buffer from parent
-    mb->write_lock();
-    size_t oldcnt = mb->count();
-    size_t oldsz = mb->size();
-
-    Slice anchor = mb->begin()->key.clone();
 
     // merge message buffer into leaf
     RecordBuckets res(tree_->options_.leaf_node_bucket_size);
@@ -1048,22 +1031,19 @@ bool LeafNode::cascade(MsgBuf *mb, InnerNode* parent)
     parent->msgcnt_ = parent->msgcnt_ + mb->count() - oldcnt;
     parent->msgbufsz_ = parent->msgbufsz_ + mb->size() - oldsz;
 
-    // unlock message buffer
-    mb->unlock();
-    // crab walk
-    parent->unlock();
+    // unlocks
+    mb->write_unlock();
+    parent->write_unlock();
+    write_unlock();
 
     if (records_.size() == 0) {
-        merge(anchor);
+        merge(parent);
     } else if (records_.size() > 1 && (records_.size() > 
         tree_->options_.leaf_node_record_count || size() > 
         tree_->options_.leaf_node_page_size)) {
-        split(anchor);
-    } else {
-        unlock();
+        split(parent);
     }
     
-    anchor.destroy();
     return true;
 }
 
@@ -1074,34 +1054,17 @@ Record LeafNode::to_record(const Msg& m)
 }
 
 
-void LeafNode::split(Slice anchor)
+void LeafNode::split(InnerNode *parent)
 {
     if (balancing_) {
-        unlock();
         return;
     }
+
+    // try lock
+    if (!try_write_lock()) return;
+
     balancing_ = true;
     assert(records_.size() > 1);
-    // release the write lock
-    unlock();
-
-    // need to search from root to leaf again
-    // since the path may be modified
-    vector<DataNode*> path;
-    tree_->lock_path(anchor, path);
-    assert(path.back() == this);
-
-    // may have deletions during this period
-    if (records_.size() <= 1 ||
-        (records_.size() <= (tree_->options_.leaf_node_record_count / 2) &&
-         size() <= (tree_->options_.leaf_node_page_size / 2) )) {
-        while (path.size()) {
-            path.back()->unlock();
-            path.back()->dec_ref();
-            path.pop_back();
-        }
-        return;
-    }
    
     // create new leaf
     LeafNode *nl = tree_->new_leaf_node();
@@ -1130,39 +1093,26 @@ void LeafNode::split(Slice anchor)
     nl->dec_ref();
 
     balancing_ = false;
-    path.pop_back();
-    unlock();
-    dec_ref();
 
-    // propagation
-    InnerNode *parent = (InnerNode*) path.back();
     assert(parent);
-    parent->add_pivot(k, nl->nid_, path);
+    parent->add_pivot(k, nl->nid_);
+
+    // unlock
+    write_unlock();
 }
 
-void LeafNode::merge(Slice anchor)
+void LeafNode::merge(InnerNode *parent)
 {
     if (balancing_) {
-        unlock();
         return;
     }
+
+    // lock
+    if (!try_write_lock()) return;
+
     balancing_ = true;
     assert(records_.size() == 0);
-    // release the write lock
-    unlock();
-
-    // acquire write locks from root to leaf
-    vector<DataNode*> path;
-    tree_->lock_path(anchor, path);
-    assert(path.back() == this);
-
-    // may have insertions during this period
     if (records_.size() > 0) {
-        while (path.size()) {
-            path.back()->unlock();
-            path.back()->dec_ref();
-            path.pop_back();
-        }
         return;
     }
     
@@ -1187,22 +1137,17 @@ void LeafNode::merge(Slice anchor)
     dead_ = true;
     balancing_ = false;
 
-    path.pop_back();
-    unlock();
-    dec_ref();
-
-    // propagation
-    InnerNode *parent = (InnerNode*) path.back();
     assert(parent);
-    parent->rm_pivot(nid_, path);
+    parent->rm_pivot(nid_);
+
+    // unlock
+    write_unlock();
 }
 
 bool LeafNode::find(Slice key, Slice& value, InnerNode *parent) 
 {
     assert(parent);
     read_lock();
-
-    parent->unlock();
 
     size_t idx = 0;
     for (; idx < buckets_info_.size(); idx ++) {
@@ -1212,7 +1157,7 @@ bool LeafNode::find(Slice key, Slice& value, InnerNode *parent)
     }
 
     if (idx == 0) {
-        unlock();
+        read_unlock();
         return false;
     }
 
@@ -1220,7 +1165,7 @@ bool LeafNode::find(Slice key, Slice& value, InnerNode *parent)
     if (bucket == NULL) {
         if (!load_bucket(idx - 1)) {
             LOG_ERROR("load bucket error nid " << nid_ << ", bucket " << (idx-1));
-            unlock();
+            read_unlock();
             return false;
         }
         bucket = records_.bucket(idx - 1);
@@ -1235,12 +1180,8 @@ bool LeafNode::find(Slice key, Slice& value, InnerNode *parent)
         value = it->value.clone();
     }
 
-    unlock();
+    read_unlock();
     return ret;
-}
-
-void LeafNode::lock_path(Slice key, std::vector<DataNode*>& path)
-{
 }
 
 size_t LeafNode::size()

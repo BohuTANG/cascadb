@@ -62,6 +62,8 @@ public:
 
     bool get(Slice key, Slice& value);
 
+    InnerNode* root() { return root_; }
+
 private:
     friend class InnerNode;
     friend class LeafNode;
@@ -72,13 +74,9 @@ private:
     
     DataNode* load_node(bid_t nid, bool skeleton_only);
     
-    InnerNode* root() { return root_; }
-    
     void pileup(InnerNode *root);
     
     void collapse();
-
-    void lock_path(Slice key, std::vector<DataNode*>& path);
 
     class TreeNodeFactory : public NodeFactory {
     public:

@@ -28,7 +28,7 @@ TEST(Record, serialize)
     EXPECT_EQ("a", rec2.key);
     EXPECT_EQ("1", rec2.value);
 }
-
+/*
 TEST(Tree, bootstrap)
 {
     Options opts;
@@ -272,7 +272,6 @@ TEST(InnerNode, serialize)
     delete opts.comparator;
 }
 
-/*
 TEST(Leaf, serialize)
 {
     char buffer[4096];
@@ -413,7 +412,6 @@ TEST(InnerNode, cascade)
     n3->dec_ref();
     delete tree;
 }
-*/
 
 TEST(InnerNode, add_pivot)
 {
@@ -581,7 +579,6 @@ TEST(InnerNode, find)
     
 }
 
-/*
 TEST(LeafNode, cascade)
 {
     LexicalComparator comp;

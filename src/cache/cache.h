@@ -126,6 +126,9 @@ private:
     Mutex global_mtx_;
     
     bool alive_;
+
+    // cache is evciting flag
+    bool evicting_;
     // scan nodes not being used,
     // async flush dirty page out
     Thread* flusher_;

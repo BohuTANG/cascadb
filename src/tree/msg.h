@@ -80,10 +80,20 @@ public:
     {
         lock_.read_lock();
     }
+
+    void read_unlock()
+    {
+        lock_.unlock();
+    }
     
     void write_lock()
     {
         lock_.write_lock();
+    }
+
+    void write_unlock()
+    {
+        lock_.unlock();
     }
 
     // unlock MsgBuf after iterator related operations

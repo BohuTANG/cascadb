@@ -39,6 +39,7 @@ Cache::Cache(const Options& options)
 : options_(options), 
   size_(0),
   alive_(false),
+  evicting_(false),
   flusher_(NULL)
 {
 }
@@ -163,7 +164,7 @@ void Cache::del_table(const std::string& tbn, bool flush)
         it != nodes_.end(); it++ ) {
         if (it->first.tbn  == tbn) {
             Node *node = it->second;
-            assert(node->ref() == 0);
+            //assert(node->ref() == 0);
             delete node;
             
             nodes_.erase(it);
@@ -188,13 +189,8 @@ void Cache::put(const std::string& tbn, bid_t nid, Node* node)
     }
 
     if (must_evict()) {
-        while (true) {
+        if (!evicting_)
             evict();
-            if (!must_evict()) {
-                break;
-            }
-            usleep(1000); // give up 1 millisecond
-        }
     }
 
     nodes_lock_.write_lock();
@@ -225,15 +221,10 @@ Node* Cache::get(const std::string& tbn, bid_t nid, bool skeleton_only)
     nodes_lock_.unlock();
 
     if (must_evict()) {
-        while (true) {
+        if (!evicting_)
             evict();
-            if (!must_evict()) {
-                break;
-            }
-            usleep(1000); // give up 1 millisecond
-        }
     }
-    
+
     Block* block = tbs.layout->read(nid, skeleton_only);
     if (block == NULL) return NULL;
     
@@ -320,6 +311,7 @@ void Cache::evict()
     vector<Node*> clean_nodes;
 
     nodes_lock_.write_lock();
+    evicting_ = true;
 
     for(map<CacheKey, Node*>::iterator it = nodes_.begin();
         it != nodes_.end(); it++ ) {
@@ -401,6 +393,7 @@ void Cache::evict()
     size_ -= evicted_size;
     size_lock.unlock();
 
+    evicting_ = false;
     nodes_lock_.unlock();
 
     // clear zombies

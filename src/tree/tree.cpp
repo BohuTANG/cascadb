@@ -163,16 +163,6 @@ void Tree::collapse()
     schema_->unlock();
 }
 
-void Tree::lock_path(Slice key, std::vector<DataNode*>& path)
-{
-    assert(root_);
-    InnerNode *root = root_;
-    root->inc_ref();
-    root->write_lock();
-    path.push_back(root);
-    root->lock_path(key, path);
-}
-
 Tree::TreeNodeFactory::TreeNodeFactory(Tree *tree)
 : tree_(tree)
 {
