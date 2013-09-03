@@ -113,7 +113,6 @@ void Cache::flush_table(const std::string& tbn)
                 size_t sz = node->size();
                 // TODO: flush all node
                 if (node->is_dirty() && !node->is_flushing() && node->pin() == 0) {
-                    node->write_lock();
                     node->set_flushing(true);
                     dirty_nodes.push_back(node);
                     dirty_size += sz;
@@ -486,16 +485,14 @@ void Cache::write_back()
 
             Node *node = expired_nodes[i];
 
-            // set write lock on node
-            if (node->try_write_lock()) {
+            if (node->try_read_lock()) {
                 // check again
                 if (node->pin() == 0 && !node->is_dead()) {
                     node->set_flushing(true);
                     flushed_nodes.push_back(node);
                     flushed_size += node->size();
-                } else {
-                    node->unlock();
-                }
+                } 
+                node->read_unlock();
             }
         }
 
@@ -524,16 +521,14 @@ void Cache::write_back()
 
                 Node *node = candidates[i];
 
-                // set write lock on node
-                if (node->try_write_lock()) {
+                if (node->try_read_lock()) {
                     // check again
                     if (node->pin() == 0 && !node->is_dead()) {
                         node->set_flushing(true);
                         flushed_nodes.push_back(node);
                         flushed_size += node->size();
-                    } else {
-                        node->unlock();
                     }
+                    node->read_unlock();
                 }
             }
         }
@@ -568,9 +563,10 @@ void Cache::flush_nodes(vector<Node*>& nodes)
 
     for (size_t i = 0 ; i < nodes.size(); i++) {
         Node* node = nodes[i];
-        bid_t nid = node->nid();
 
-        // TODO: test node is write locked
+        // lock node
+        node->write_lock();
+        bid_t nid = node->nid();
 
         TableSettings tbs;
         if (!get_table_settings(node->table_name(), tbs)) {
@@ -593,7 +589,7 @@ void Cache::flush_nodes(vector<Node*>& nodes)
         node->set_dirty(false);
 
         // unlock node
-        node->unlock();
+        node->write_unlock();
         
         WriteCompleteContext *context = new WriteCompleteContext();
         context->node = node;
