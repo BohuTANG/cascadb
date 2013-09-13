@@ -40,6 +40,7 @@ public:
 private:
     std::string name_;
     Options options_;
+    Status status_;
     
     AIOFile *file_;
     Layout *layout_;

@@ -40,19 +40,19 @@ bool DBImpl::init()
     LOG_INFO("init db , data file length " << length << ", create " << create);
 
     file_ = dir->open_aio_file(filename);
-    layout_ = new Layout(file_, length, options_);
+    layout_ = new Layout(file_, length, options_, &status_);
     if (!layout_->init(create)) {
         LOG_ERROR("init layout error");
         return false;
     }
 
-    cache_ = new Cache(options_);
+    cache_ = new Cache(options_, &status_);
     if (!cache_->init()) {
         LOG_ERROR("init cache error");
         return false;
     }
 
-    tree_ = new Tree(name_, options_, cache_, layout_);
+    tree_ = new Tree(name_, options_, &status_, cache_, layout_);
     if (!tree_->init()) {
         LOG_ERROR("tree init error");
         return false;

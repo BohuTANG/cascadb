@@ -7,6 +7,7 @@
 #include <set>
 
 #include "util/logger.h"
+#include "util/atomic.h"
 #include "cache.h"
 
 using namespace std;
@@ -35,8 +36,9 @@ public:
     }
 };
 
-Cache::Cache(const Options& options)
-: options_(options), 
+Cache::Cache(const Options& options, Status *status)
+: options_(options),
+  status_(status),
   size_(0),
   alive_(false),
   evicting_(false),
@@ -163,7 +165,7 @@ void Cache::del_table(const std::string& tbn, bool flush)
         it != nodes_.end(); it++ ) {
         if (it->first.tbn  == tbn) {
             Node *node = it->second;
-            //assert(node->ref() == 0);
+            assert(node->ref() == 0);
             delete node;
             
             nodes_.erase(it);
@@ -179,7 +181,10 @@ void Cache::del_table(const std::string& tbn, bool flush)
 
 void Cache::put(const std::string& tbn, bid_t nid, Node* node)
 {
-    assert(node->ref() == 0);
+    //assert(node->ref() == 0);
+
+    // status
+    ATOMIC_ADD(&status_->status_cache_put_num, 1);
 
     CacheKey key(tbn, nid);
     TableSettings tbs;
@@ -195,12 +200,15 @@ void Cache::put(const std::string& tbn, bid_t nid, Node* node)
     nodes_lock_.write_lock();
     assert(nodes_.find(key) == nodes_.end());
     nodes_[key] = node;
-    node->inc_ref();
+    //node->inc_ref();
     nodes_lock_.unlock();
 }
 
 Node* Cache::get(const std::string& tbn, bid_t nid, bool skeleton_only)
 {
+    // status
+    ATOMIC_ADD(&status_->status_cache_get_num, 1);
+
     CacheKey key(tbn, nid);
     Node *node;
 
@@ -213,7 +221,7 @@ Node* Cache::get(const std::string& tbn, bid_t nid, bool skeleton_only)
     map<CacheKey, Node*>::iterator it = nodes_.find(key);
     if (it != nodes_.end()) {
         node = it->second;
-        node->inc_ref();
+        //node->inc_ref();
         nodes_lock_.unlock();
         return node;
     }
@@ -243,7 +251,7 @@ Node* Cache::get(const std::string& tbn, bid_t nid, bool skeleton_only)
     } else {
         nodes_[key] = node;
     }
-    node->inc_ref();
+    //node->inc_ref();
     nodes_lock_.unlock();
 
     return node;
@@ -311,6 +319,9 @@ void Cache::evict()
 
     nodes_lock_.write_lock();
     evicting_ = true;
+
+    // status
+    ATOMIC_ADD(&status_->status_cache_evict_num, 1);
 
     for(map<CacheKey, Node*>::iterator it = nodes_.begin();
         it != nodes_.end(); it++ ) {
@@ -558,6 +569,9 @@ void Cache::write_back()
 
 void Cache::flush_nodes(vector<Node*>& nodes)
 {
+    // status
+    ATOMIC_ADD(&status_->status_cache_writeback_num, 1);
+
     LOG_TRACE("flush " << nodes.size() << " nodes");
     set<string> tables;
 

@@ -14,6 +14,7 @@
 
 #include "cascadb/file.h"
 #include "cascadb/options.h"
+#include "cascadb/status.h"
 #include "sys/sys.h"
 #include "util/callback.h"
 #include "block.h"
@@ -43,7 +44,8 @@ class Layout {
 public:
     Layout(AIOFile* aio_file,
            size_t length,
-           const Options& options);
+           const Options& options,
+           Status *status);
 
     ~Layout();
    
@@ -189,6 +191,7 @@ private:
     AIOFile                             *aio_file_;
     uint64_t                            length_; // file length
     Options                             options_;
+    Status                              *status_;
 
     Mutex                               mtx_;
 

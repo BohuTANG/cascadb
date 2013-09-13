@@ -6,6 +6,7 @@
 #define CASCADB_CACHE_H_
 
 #include "cascadb/options.h"
+#include "cascadb/status.h"
 #include "tree/node.h"
 #include "serialize/block.h"
 #include "serialize/layout.h"
@@ -32,7 +33,7 @@ public:
 
 class Cache {
 public:
-    Cache(const Options& options);
+    Cache(const Options& options, Status *status);
     
     ~Cache();
     
@@ -93,6 +94,7 @@ protected:
     
 private:
     Options options_;
+    Status *status_;
 
     RWLock tables_lock_;
     std::map<std::string, TableSettings> tables_;

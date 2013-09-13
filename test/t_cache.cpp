@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "cascadb/options.h"
+#include "cascadb/status.h"
 #include "sys/sys.h"
 #include "store/ram_directory.h"
 #include "serialize/layout.h"
@@ -63,15 +64,16 @@ public:
 };
 
 TEST(Cache, read_and_write) {
+    Status status;
     Options opts;
     opts.cache_limit = 4096 * 1000;
 
     Directory *dir = new RAMDirectory();
     AIOFile *file = dir->open_aio_file("cache_test");
-    Layout *layout = new Layout(file, 0, opts);
+    Layout *layout = new Layout(file, 0, opts, &status);
     layout->init(true);
 
-    Cache *cache = new Cache(opts);
+    Cache *cache = new Cache(opts, &status);
     cache->init();
 
     NodeFactory *factory = new FakeNodeFactory("t1");
@@ -81,7 +83,6 @@ TEST(Cache, read_and_write) {
         Node *node = new FakeNode("t1", i);
         node->set_dirty(true);
         cache->put("t1", i, node);
-        node->dec_ref();
     }
 
     // give it time to flush
@@ -94,7 +95,6 @@ TEST(Cache, read_and_write) {
         Node *node = cache->get("t1", i, false);
         EXPECT_TRUE(node != NULL);
         EXPECT_EQ((uint64_t)i, ((FakeNode*)node)->data);
-        node->dec_ref();
     }
     cache->del_table("t1");
 

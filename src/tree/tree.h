@@ -12,9 +12,11 @@
 #include "cascadb/slice.h"
 #include "cascadb/comparator.h"
 #include "cascadb/options.h"
+#include "cascadb/status.h"
 #include "sys/sys.h"
 #include "cache/cache.h"
 #include "util/compressor.h"
+#include "util/atomic.h"
 #include "node.h"
 
 namespace cascadb {
@@ -39,10 +41,12 @@ class Tree {
 public:
     Tree(const std::string& table_name,
          const Options& options,
+         Status *status,
          Cache *cache,
          Layout *layout)
     : table_name_(table_name),
       options_(options),
+      status_(status),
       cache_(cache),
       layout_(layout),
       node_factory_(NULL),
@@ -89,6 +93,8 @@ private:
     std::string     table_name_;
 
     Options         options_;
+
+    Status          *status_;
 
     Cache           *cache_;
 

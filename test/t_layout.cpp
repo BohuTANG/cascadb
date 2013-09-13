@@ -41,14 +41,14 @@ public:
         return dir->file_length("layout_test");
     }
 
-    void OpenLayout(const Options& opts, bool create) {
+    void OpenLayout(const Options& opts, Status& status, bool create) {
         size_t length;
         if (create) {
             length = 0;
         } else {
             length = dir->file_length("layout_test");
         }
-        layout = new Layout(file, length, opts);
+        layout = new Layout(file, length, opts, &status);
         ASSERT_TRUE(layout->init(create));
     }
 
@@ -135,12 +135,13 @@ public:
 TEST_F(LayoutTest, async_read)
 {
     Options opts;
+    Status status;
 
-    OpenLayout(opts, true);
+    OpenLayout(opts, status, true);
     Write();
     CloseLayout();
 
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     AsyncRead();
     CloseLayout();
 
@@ -150,12 +151,13 @@ TEST_F(LayoutTest, async_read)
 TEST_F(LayoutTest, blocking_read)
 {
     Options opts;
+    Status status;
 
-    OpenLayout(opts, true);
+    OpenLayout(opts, status, true);
     Write();
     CloseLayout();
     
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     BlockingRead();
     CloseLayout();
 
@@ -166,12 +168,13 @@ TEST_F(LayoutTest, async_read_compress)
 {
     Options opts;
     opts.compress = kSnappyCompress;
+    Status status;
 
-    OpenLayout(opts, true);
+    OpenLayout(opts, status, true);
     Write();
     CloseLayout();
 
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     AsyncRead();
     CloseLayout();
 
@@ -182,12 +185,13 @@ TEST_F(LayoutTest, blocking_read_compress)
 {
     Options opts;
     opts.compress = kSnappyCompress;
+    Status status;
 
-    OpenLayout(opts, true);
+    OpenLayout(opts, status, true);
     Write();
     CloseLayout();
     
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     BlockingRead();
     CloseLayout();
 
@@ -197,22 +201,23 @@ TEST_F(LayoutTest, blocking_read_compress)
 TEST_F(LayoutTest, update)
 {
     Options opts;
+    Status status;
 
-    OpenLayout(opts, true);
+    OpenLayout(opts, status, true);
     Write();
     CloseLayout();
 
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     AsyncRead();
     CloseLayout();
 
     ClearWriteBufs();
 
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     Write();    // update all records
     CloseLayout();
 
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     AsyncRead();
     CloseLayout();
 
@@ -220,7 +225,7 @@ TEST_F(LayoutTest, update)
 
     uint64_t len1 = GetLength();
 
-    OpenLayout(opts, false);
+    OpenLayout(opts, status, false);
     Write();    // update all records
     CloseLayout();
 

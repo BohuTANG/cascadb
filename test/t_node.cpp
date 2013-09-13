@@ -28,9 +28,10 @@ TEST(Record, serialize)
     EXPECT_EQ("a", rec2.key);
     EXPECT_EQ("1", rec2.value);
 }
-/*
+
 TEST(Tree, bootstrap)
 {
+    Status status;
     Options opts;
     opts.comparator = new LexicalComparator();
     opts.inner_node_msg_count = 4;
@@ -39,11 +40,11 @@ TEST(Tree, bootstrap)
 
     Directory *dir = new RAMDirectory();
     AIOFile *file = dir->open_aio_file("tree_test");
-    Layout *layout = new Layout(file, 0, opts);
+    Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts);
+    Cache *cache = new Cache(opts, &status);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, cache, layout);
+    Tree *tree = new Tree("", opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
     
     InnerNode *n1 = tree->root_;
@@ -56,6 +57,8 @@ TEST(Tree, bootstrap)
     EXPECT_EQ(NID_NIL, n1->first_child_);
     EXPECT_EQ(3U, n1->first_msgbuf_->count());
     n1->put("d", "1");
+    EXPECT_EQ(1U, status.status_leaf_created_num);
+
     // limit of the first msg reached
     // create leaf#1
     EXPECT_EQ(0U, n1->first_msgbuf_->count());
@@ -75,6 +78,9 @@ TEST(Tree, bootstrap)
     EXPECT_EQ(3U, n1->first_msgbuf_->count());
     
     n1->put("h", "1");
+    EXPECT_EQ(1U, status.status_leaf_split_num);
+    EXPECT_EQ(2U, status.status_leaf_created_num);
+
     // cascading into #leaf1, and split into two leafs
     EXPECT_EQ(0U, n1->first_msgbuf_->count());
     EXPECT_EQ(l1->nid_, n1->first_child_);
@@ -147,6 +153,7 @@ TEST(Tree, bootstrap)
     n3->put("bb", "2");
     n3->put("ee", "1");
     n3->put("f", "2");
+
     // cascading down, no split
     EXPECT_EQ(tree->root_, n3);
     EXPECT_EQ(NID_START+2, n3->nid_);
@@ -188,13 +195,6 @@ TEST(Tree, bootstrap)
     CHK_REC(l4->records_[0], "f", "2");
     CHK_REC(l4->records_[1], "g", "2");
     CHK_REC(l4->records_[2], "h", "1");
-    
-    l1->dec_ref();
-    l2->dec_ref();
-    l3->dec_ref();
-    l4->dec_ref();
-
-    n2->dec_ref();
 
     delete tree;
     delete cache;
@@ -206,6 +206,7 @@ TEST(Tree, bootstrap)
 
 TEST(InnerNode, serialize)
 {
+    Status status;
     Options opts;
     opts.comparator = new LexicalComparator();
     opts.inner_node_msg_count = 4;
@@ -214,11 +215,11 @@ TEST(InnerNode, serialize)
 
     Directory *dir = new RAMDirectory();
     AIOFile *file = dir->open_aio_file("tree_test");
-    Layout *layout = new Layout(file, 0, opts);
+    Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts);
+    Cache *cache = new Cache(opts, &status);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, cache, layout);
+    Tree *tree = new Tree("", opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     char buffer[40960];
@@ -272,160 +273,20 @@ TEST(InnerNode, serialize)
     delete opts.comparator;
 }
 
-TEST(Leaf, serialize)
-{
-    char buffer[4096];
-    Block blk(buffer, 0, 4096);
-    BlockReader reader(&blk);
-    BlockWriter writer(&blk);
-
-    LexicalComparator comp;
-    TestNodeStore store;
-
-    Options opts;
-    opts.comparator = &comp; 
-    Tree *tree = new Tree("", opts, &store);
-
-    tree->max.inner_node_msg_count = 4;
-    tree->max.inner_node_children_number = 2;
-    tree->max.leaf_node_record_count = 4;
-
-    LeafNode l1("", NID_LEAF_START);
-    l1.set_tree(tree);
-    l1.left_sibling_ = NID_LEAF_START+1;
-    l1.right_sibling_ = NID_LEAF_START+2;
-    l1.records_.push_back(Record("a", "1"));
-    l1.records_.push_back(Record("b", "1"));
-    l1.records_.push_back(Record("c", "1"));
-
-    EXPECT_TRUE(l1.write_to(writer) == true);
-
-    LeafNode l2("", NID_LEAF_START);
-    l2.set_tree(tree);
-    EXPECT_TRUE(l2.read_from(reader) == true);
-    EXPECT_EQ(l2.size(), blk.size());
-
-    EXPECT_EQ(NID_LEAF_START+1, l2.left_sibling_);
-    EXPECT_EQ(NID_LEAF_START+2, l2.right_sibling_);
-    EXPECT_EQ(3U, l2.records_.size());
-    CHK_REC(l2.records_[0], "a", "1");
-    CHK_REC(l2.records_[1], "b", "1");
-    CHK_REC(l2.records_[2], "c", "1");
-
-    delete tree;
-}
-
-TEST(InnerNode, write_msgbuf)
-{
-    LexicalComparator comp;
-    TestNodeStore store;
-
-    Options opts;
-    opts.comparator = &comp; 
-    Tree *tree = new Tree("", opts, &store);
-
-    tree->max.inner_node_msg_count = 4;
-    tree->init();
-
-    InnerNode *n1 = tree->new_inner_node();
-
-    n1->bottom_ = true;
-    n1->first_child_ = NID_NIL;
-    n1->first_msgbuf_ = new MsgBuf(&comp);
-    n1->pivots_.resize(1);
-    n1->pivots_[0].key = "d";
-    n1->pivots_[0].child = NID_NIL;
-    n1->pivots_[0].msgbuf = new MsgBuf(&comp);
-    n1->msgcnt_ = 0;
-    n1->msgbufsz_ = n1->first_msgbuf_->size() + n1->pivots_[0].msgbuf->size();
-
-    n1->put("a", "1");
-    EXPECT_EQ(1U, n1->first_msgbuf_->count());
-    EXPECT_EQ(0U, n1->pivots_[0].msgbuf->count());
-
-    n1->put("e", "1");
-    EXPECT_EQ(1U, n1->first_msgbuf_->count());
-    EXPECT_EQ(1U, n1->pivots_[0].msgbuf->count());
-
-    n1->dec_ref();
-    delete tree;
-    store.close();
-}
-
-TEST(InnerNode, cascade)
-{
-    LexicalComparator comp;
-    TestNodeStore store;
-
-    Options opts;
-    opts.comparator = &comp; 
-    Tree *tree = new Tree("", opts, &store);
-
-    tree->max.inner_node_msg_count = 4;
-    tree->init();
-
-    InnerNode *n1 = tree->new_inner_node();
-    InnerNode *n2 = tree->new_inner_node();
-    InnerNode *n3 = tree->new_inner_node();
-
-    n1->bottom_ = false;
-    n1->first_child_ = n2->nid_;
-    n1->first_msgbuf_ = new MsgBuf(&comp);
-    n1->pivots_.resize(1);
-    n1->pivots_[0].key = "d";
-    n1->pivots_[0].child = n3->nid_;
-    n1->pivots_[0].msgbuf = new MsgBuf(&comp);
-    n1->msgcnt_ = 0;
-    n1->msgbufsz_ = n1->first_msgbuf_->size() + n1->pivots_[0].msgbuf->size();
-
-    n2->bottom_ = true;
-    n2->first_child_ = NID_NIL;
-    n2->first_msgbuf_ = new MsgBuf(&comp);
-    n2->msgcnt_ = 0;
-    n2->msgbufsz_ = n2->first_msgbuf_->size();
-
-    n3->bottom_ = true;
-    n3->first_child_ = NID_NIL;
-    n3->first_msgbuf_ = new MsgBuf(&comp);
-    n3->msgcnt_ = 0;
-    n3->msgbufsz_ = n3->first_msgbuf_->size();
-
-    n1->put("a","1");
-    n1->put("b","1");
-    n1->put("c","1");
-    n1->put("d","1");
-
-    EXPECT_EQ(1U, n1->msgcnt_);
-    EXPECT_EQ(3U, n2->msgcnt_);
-    EXPECT_EQ(0U, n3->msgcnt_);
-
-    n1->put("e","1");
-    n1->put("f","1");
-    n1->put("a","2");
-
-    EXPECT_EQ(1U, n1->msgcnt_);
-    EXPECT_EQ(3U, n2->msgcnt_);
-    EXPECT_EQ(3U, n3->msgcnt_);
-
-    n1->dec_ref();
-    n2->dec_ref();
-    n3->dec_ref();
-    delete tree;
-}
-
 TEST(InnerNode, add_pivot)
 {
+    Status status;
     Options opts;
     opts.comparator = new LexicalComparator();
     opts.inner_node_children_number = 4;
 
     Directory *dir = new RAMDirectory();
     AIOFile *file = dir->open_aio_file("tree_test");
-    Layout *layout = new Layout(file, 0, opts);
+    Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts);
+    Cache *cache = new Cache(opts, &status);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, cache, layout);
+    Tree *tree = new Tree("", opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     InnerNode *n1 = tree->new_inner_node();
@@ -436,33 +297,20 @@ TEST(InnerNode, add_pivot)
     n1->msgcnt_ = 0;
     n1->msgbufsz_ = n1->first_msgbuf_->size();
 
-    std::vector<DataNode*> path;
-
-    path.push_back(n1);
-    n1->inc_ref();
-    n1->write_lock();
-    n1->add_pivot("e", NID_START + 101, path);
+    n1->add_pivot("e", NID_START + 101);
     EXPECT_EQ(1U, n1->pivots_.size());
     EXPECT_EQ("e", n1->pivots_[0].key);
 
-    path.push_back(n1);
-    n1->inc_ref();
-    n1->write_lock();
-    n1->add_pivot("d", NID_START + 102, path);
+    n1->add_pivot("d", NID_START + 102);
     EXPECT_EQ(2U, n1->pivots_.size());
     EXPECT_EQ("d", n1->pivots_[0].key);
     EXPECT_EQ("e", n1->pivots_[1].key);
 
-    path.push_back(n1);
-    n1->inc_ref();
-    n1->write_lock();
-    n1->add_pivot("f", NID_START + 103, path);
+    n1->add_pivot("f", NID_START + 103);
     EXPECT_EQ(3U, n1->pivots_.size());
     EXPECT_EQ("d", n1->pivots_[0].key);
     EXPECT_EQ("e", n1->pivots_[1].key);
     EXPECT_EQ("f", n1->pivots_[2].key);
-
-    n1->dec_ref();
 
     delete tree;
     delete cache;
@@ -474,17 +322,18 @@ TEST(InnerNode, add_pivot)
 
 TEST(InnerNode, split)
 {
+    Status status;
     Options opts;
     opts.comparator = new LexicalComparator();
     opts.inner_node_children_number = 3;
 
     Directory *dir = new RAMDirectory();
     AIOFile *file = dir->open_aio_file("tree_test");
-    Layout *layout = new Layout(file, 0, opts);
+    Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts);
+    Cache *cache = new Cache(opts, &status);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, cache, layout);
+    Tree *tree = new Tree("", opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     InnerNode *n1 = tree->new_inner_node();
@@ -502,37 +351,24 @@ TEST(InnerNode, split)
     n2->msgcnt_ = 0;
     n2->msgbufsz_ = n2->first_msgbuf_->size();
 
-    std::vector<DataNode*> path;
-
-    path.push_back(n1);
-    path.push_back(n2);
-    n1->inc_ref();
-    n1->write_lock();
-    n2->inc_ref();
-    n2->write_lock();
-    n2->add_pivot("e", NID_START + 101, path);
+    // add 1th pivot
+    n2->add_pivot("e", NID_START + 101);
     EXPECT_EQ(1U, n2->pivots_.size());
     EXPECT_EQ("e", n2->pivots_[0].key);
 
-    path.push_back(n1);
-    path.push_back(n2);
-    n1->inc_ref();
-    n1->write_lock();
-    n2->inc_ref();
-    n2->write_lock();
-    n2->add_pivot("d", NID_START + 102, path);
+    // add 2th pivot
+    n2->add_pivot("d", NID_START + 102);
     EXPECT_EQ(2U, n2->pivots_.size());
     EXPECT_EQ("d", n2->pivots_[0].key);
     EXPECT_EQ("e", n2->pivots_[1].key);
 
-    path.push_back(n1);
-    path.push_back(n2);
-    n1->inc_ref();
-    n1->write_lock();
-    n2->inc_ref();
-    n2->write_lock();
-    n2->add_pivot("f", NID_START + 103, path);
+    // add 3th pivot
+    n2->add_pivot("f", NID_START + 103);
+    EXPECT_EQ(3U, n2->pivots_.size());
+
+    n2->split(n1);
     EXPECT_EQ(1U, n2->pivots_.size());
+
     EXPECT_EQ("d", n2->pivots_[0].key);
     EXPECT_EQ(1U, n1->pivots_.size());
     EXPECT_EQ("e", n1->pivots_[0].key);
@@ -542,9 +378,39 @@ TEST(InnerNode, split)
     EXPECT_EQ(1U, n3->pivots_.size());
     EXPECT_EQ("f", n3->pivots_[0].key);
 
-    n1->dec_ref();
-    n2->dec_ref();
-    n3->dec_ref();
+    delete tree;
+    delete cache;
+    delete layout;
+    delete file;
+    delete dir;
+    delete opts.comparator;
+}
+
+
+TEST(InnerNode, root_pileup)
+{
+    Status status;
+    Options opts;
+    opts.comparator = new LexicalComparator();
+    opts.inner_node_children_number = 3;
+
+    Directory *dir = new RAMDirectory();
+    AIOFile *file = dir->open_aio_file("tree_test");
+    Layout *layout = new Layout(file, 0, opts, &status);
+    ASSERT_TRUE(layout->init(true));
+    Cache *cache = new Cache(opts, &status);
+    ASSERT_TRUE(cache->init());
+    Tree *tree = new Tree("", opts, &status, cache, layout);
+    ASSERT_TRUE(tree->init());
+
+    // root pileup
+    InnerNode *root = tree->root_;
+    root->add_pivot("aa", NID_START + 102);
+    root->add_pivot("bb", NID_START + 103);
+    root->add_pivot("cc", NID_START + 104);
+    root->split(NULL);
+    EXPECT_EQ(1U, status.status_tree_pileup_num);
+
 
     delete tree;
     delete cache;
@@ -554,109 +420,83 @@ TEST(InnerNode, split)
     delete opts.comparator;
 }
 
-TEST(InnerNode, split_recursive_to_root)
-{
-    
-}
-
 TEST(InnerNode, rm_pivot)
 {
-    
-}
-
-TEST(InnerNode, rm_pivot_recursive)
-{
-    
-}
-
-TEST(InnerNode, rm_pivot_recursive_to_root)
-{
-    
-}
-
-TEST(InnerNode, find)
-{
-    
-}
-
-TEST(LeafNode, cascade)
-{
-    LexicalComparator comp;
-    TestNodeStore store;
-
+    Status status;
     Options opts;
-    opts.comparator = &comp; 
-    Tree *tree = new Tree("", opts, &store);
+    opts.comparator = new LexicalComparator();
+    opts.inner_node_children_number = 3;
 
-    tree->max.leaf_node_record_count = 100;
-    tree->init();
+    Directory *dir = new RAMDirectory();
+    AIOFile *file = dir->open_aio_file("tree_test");
+    Layout *layout = new Layout(file, 0, opts, &status);
+    ASSERT_TRUE(layout->init(true));
+    Cache *cache = new Cache(opts, &status);
+    ASSERT_TRUE(cache->init());
+    Tree *tree = new Tree("", opts, &status, cache, layout);
+    ASSERT_TRUE(tree->init());
 
-    InnerNode *n1 = tree->new_inner_node();
-    LeafNode *l1 = tree->new_leaf_node();
+    InnerNode *n2 = tree->new_inner_node();
 
-    n1->bottom_ = true;
-    n1->first_child_ = l1->nid_;
-    n1->first_msgbuf_ = new MsgBuf(&comp);
-    PUT(*n1->first_msgbuf_, "a", "1");
-    PUT(*n1->first_msgbuf_, "b", "1");
-    PUT(*n1->first_msgbuf_, "c", "1");
-    PUT(*n1->first_msgbuf_, "d", "1");
-    n1->msgcnt_ = 4;
-    n1->msgbufsz_ = n1->first_msgbuf_->size();
+    n2->bottom_ = false;
+    n2->first_child_ = NID_START + 100;
+    n2->first_msgbuf_ = new MsgBuf(opts.comparator);
+    n2->msgcnt_ = 0;
+    n2->msgbufsz_ = n2->first_msgbuf_->size();
 
-    n1->read_lock();
-    l1->cascade(n1->first_msgbuf_, n1);
-    EXPECT_EQ(0U, n1->first_msgbuf_->count());
-    EXPECT_EQ(4U, l1->records_.size());
+    // add 1th pivot
+    n2->add_pivot("e", NID_START + 101);
+    EXPECT_EQ(1U, n2->pivots_.size());
+    EXPECT_EQ("e", n2->pivots_[0].key);
 
-    PUT(*n1->first_msgbuf_, "e", "1");
-    PUT(*n1->first_msgbuf_, "f", "1");
-    PUT(*n1->first_msgbuf_, "g", "1");
-    PUT(*n1->first_msgbuf_, "h", "1");
-    n1->msgcnt_ = 4;
-    n1->msgbufsz_ = n1->first_msgbuf_->size();
+    // add 2th pivot
+    n2->add_pivot("d", NID_START + 102);
+    EXPECT_EQ(2U, n2->pivots_.size());
+    EXPECT_EQ("d", n2->pivots_[0].key);
+    EXPECT_EQ("e", n2->pivots_[1].key);
 
-    n1->read_lock();
-    l1->cascade(n1->first_msgbuf_, n1);
-    EXPECT_EQ(0U, n1->first_msgbuf_->count());
-    EXPECT_EQ(8U, l1->records_.size());
+    // add 3th pivot
+    n2->add_pivot("f", NID_START + 103);
+    EXPECT_EQ(3U, n2->pivots_.size());
 
-    PUT(*n1->first_msgbuf_, "a", "2");
-    PUT(*n1->first_msgbuf_, "c", "2");
-    PUT(*n1->first_msgbuf_, "f", "2");
-    PUT(*n1->first_msgbuf_, "h", "2");
-    n1->msgcnt_ = 4;
-    n1->msgbufsz_ = n1->first_msgbuf_->size();
+    // remove the 2th pivot
+    n2->rm_pivot(NID_START + 101);
+    EXPECT_EQ(2U, n2->pivots_.size());
+    EXPECT_EQ("d", n2->pivots_[0].key);
+    EXPECT_EQ("f", n2->pivots_[1].key);
 
-    n1->read_lock();
-    l1->cascade(n1->first_msgbuf_, n1);
-    EXPECT_EQ(0U, n1->first_msgbuf_->count());
-    EXPECT_EQ(8U, l1->records_.size());
-    CHK_REC(l1->records_[0], "a", "2");
-    CHK_REC(l1->records_[1], "b", "1");
-    CHK_REC(l1->records_[2], "c", "2");
-    CHK_REC(l1->records_[3], "d", "1");
-    CHK_REC(l1->records_[4], "e", "1");
-    CHK_REC(l1->records_[5], "f", "2");
-    CHK_REC(l1->records_[6], "g", "1");
-    CHK_REC(l1->records_[7], "h", "2");
+    // remove root only one pivot
+    // root to collapse
+    InnerNode *old_root = tree->root_;
+    tree->root_->rm_pivot(tree->root_->first_child_);
+    EXPECT_TRUE(old_root != tree->root_);
+    EXPECT_EQ(1U, status.status_tree_collapse_num);
 
-    n1->dec_ref();
-    l1->dec_ref();
     delete tree;
+    delete cache;
+    delete layout;
+    delete file;
+    delete dir;
+    delete opts.comparator;
 }
 
-TEST(LeafNode, split)
+TEST(LeafNode, split_and_merge)
 {
-    LexicalComparator comp;
-    TestNodeStore store;
-
+    Status status;
     Options opts;
-    opts.comparator = &comp; 
-    Tree *tree = new Tree("", opts, &store);
+    opts.comparator = new LexicalComparator();
+    opts.inner_node_msg_count = 4;
+    opts.inner_node_children_number = 2;
+    opts.leaf_node_record_count = 4;
 
-    tree->max.leaf_node_record_count = 4;
-    tree->init();
+    Directory *dir = new RAMDirectory();
+    AIOFile *file = dir->open_aio_file("tree_test");
+    Layout *layout = new Layout(file, 0, opts, &status);
+    ASSERT_TRUE(layout->init(true));
+    Cache *cache = new Cache(opts, &status);
+    ASSERT_TRUE(cache->init());
+    Tree *tree = new Tree("", opts, &status, cache, layout);
+    ASSERT_TRUE(tree->init());
 
     InnerNode *n1 = tree->new_inner_node();
     LeafNode *l1 = tree->new_leaf_node();
@@ -665,7 +505,7 @@ TEST(LeafNode, split)
 
     n1->bottom_ = true;
     n1->first_child_ = l1->nid_;
-    n1->first_msgbuf_ = new MsgBuf(&comp);
+    n1->first_msgbuf_ = new MsgBuf(opts.comparator);
     PUT(*n1->first_msgbuf_, "a", "1");
     PUT(*n1->first_msgbuf_, "b", "1");
     PUT(*n1->first_msgbuf_, "c", "1");
@@ -673,7 +513,6 @@ TEST(LeafNode, split)
     n1->msgcnt_ = 4;
     n1->msgbufsz_ = n1->first_msgbuf_->size();
 
-    n1->read_lock();
     l1->cascade(n1->first_msgbuf_, n1);
 
     PUT(*n1->first_msgbuf_, "e", "1");
@@ -683,30 +522,46 @@ TEST(LeafNode, split)
     n1->msgcnt_ = 4;
     n1->msgbufsz_ = n1->first_msgbuf_->size();
 
-    n1->read_lock();
     l1->cascade(n1->first_msgbuf_, n1);
 
     EXPECT_EQ(1U, n1->pivots_.size());
     EXPECT_EQ("e", n1->pivots_[0].key);
     EXPECT_NE(NID_NIL, n1->pivots_[0].child);
-    LeafNode *l2 = (LeafNode*)tree->load_node(n1->pivots_[0].child);
+    LeafNode *l2 = (LeafNode*)tree->load_node(n1->pivots_[0].child, false);
     EXPECT_TRUE(l2 != NULL);
 
     EXPECT_EQ(4U, l1->records_.size());
     EXPECT_EQ(4U, l2->records_.size());
 
-    n1->dec_ref();
-    l1->dec_ref();
-    l2->dec_ref();
+    // remove l2 from n1, merge l2 to l1
+    DEL(*n1->first_msgbuf_, "e");
+    DEL(*n1->first_msgbuf_, "f");
+    DEL(*n1->first_msgbuf_, "g");
+    DEL(*n1->first_msgbuf_, "h");
+    n1->msgcnt_ = 4;
+    n1->msgbufsz_ = n1->first_msgbuf_->size();
+
+    l2->cascade(n1->first_msgbuf_, n1);
+    EXPECT_EQ(0U, n1->pivots_.size());
+
+
+    // remove l1 from n1
+    DEL(*n1->first_msgbuf_, "a");
+    DEL(*n1->first_msgbuf_, "b");
+    DEL(*n1->first_msgbuf_, "c");
+    DEL(*n1->first_msgbuf_, "d");
+    n1->msgcnt_ = 4;
+    n1->msgbufsz_ = n1->first_msgbuf_->size();
+    l1->cascade(n1->first_msgbuf_, n1);
+    EXPECT_TRUE(n1->first_msgbuf_ == NULL);
+
+    // remove n1 from root
+    n1->cascade(tree->root_->first_msgbuf_, tree->root_);
+
     delete tree;
-}
-*/
-
-
-TEST(LeafNode, merge)
-{
-}
-
-TEST(LeafNode, find)
-{
+    delete cache;
+    delete layout;
+    delete file;
+    delete dir;
+    delete opts.comparator;
 }

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "util/logger.h"
+#include "util/atomic.h"
 #include "tree.h"
 
 using namespace std;
@@ -45,11 +46,13 @@ bool Tree::init()
     if (schema_ == NULL) {
         LOG_INFO("schema node doesn't exist, init empty db");
         schema_ = new SchemaNode(table_name_);
+
         schema_->root_node_id = NID_NIL;
         schema_->next_inner_node_id = NID_START;
         schema_->next_leaf_node_id = NID_LEAF_START;
         schema_->tree_depth = 2;
         schema_->set_dirty(true);
+
         cache_->put(table_name_, NID_SCHEMA, schema_);
     }
 
@@ -58,16 +61,20 @@ bool Tree::init()
         root_ = new_inner_node();
         root_->init_empty_root();
 
+
         schema_->write_lock();
         schema_->root_node_id = root_->nid();
         schema_->set_dirty(true);
-        schema_->unlock();
+        schema_->write_unlock();
     } else {
-        LOG_INFO("load root node nid " << hex << schema_->root_node_id << dec);
         root_ = (InnerNode*)load_node(schema_->root_node_id, false);
     }
-
     assert(root_);
+
+    // to guarantee not remove from cache list
+    schema_->inc_ref();
+    root_->inc_ref();
+
     return true;
 }
 
@@ -103,10 +110,13 @@ bool Tree::get(Slice key, Slice& value)
 
 InnerNode* Tree::new_inner_node()
 {
+    // status
+    ATOMIC_ADD(&status_->status_innernode_created_num, 1);
+
     schema_->write_lock();
     bid_t nid = schema_->next_inner_node_id ++;
     schema_->set_dirty(true);
-    schema_->unlock();
+    schema_->write_unlock();
 
     InnerNode* node = (InnerNode *)node_factory_->new_node(nid);
     assert(node);
@@ -117,10 +127,13 @@ InnerNode* Tree::new_inner_node()
 
 LeafNode* Tree::new_leaf_node()
 {
+    // status
+    ATOMIC_ADD(&status_->status_leaf_created_num, 1);
+
     schema_->write_lock();
     bid_t nid = schema_->next_leaf_node_id ++;
     schema_->set_dirty(true);
-    schema_->unlock();
+    schema_->write_unlock();
 
     LeafNode* node = (LeafNode *)node_factory_->new_node(nid);
     assert(node);
@@ -137,7 +150,11 @@ DataNode* Tree::load_node(bid_t nid, bool skeleton_only)
 
 void Tree::pileup(InnerNode *root)
 {
+    // status
+    ATOMIC_ADD(&status_->status_tree_pileup_num, 1);
+
     assert(root_ != root);
+    root->inc_ref();
     root_->dec_ref();
     root_ = root;
 
@@ -145,22 +162,27 @@ void Tree::pileup(InnerNode *root)
     schema_->root_node_id = root_->nid();
     schema_->tree_depth ++;
     schema_->set_dirty(true);
-    schema_->unlock();
+    schema_->write_unlock();
+    LOG_INFO("tree pileup, root nid " << root_->nid());
 }
 
 void Tree::collapse()
 {
-    root_->dec_ref();
-    
+    // status
+    ATOMIC_ADD(&status_->status_tree_collapse_num, 1);
+
     root_ = new_inner_node();
     root_->init_empty_root();
     assert(root_);
+
+    // to guarantee not remove from cache list
+    root_->inc_ref();
 
     schema_->write_lock();
     schema_->root_node_id = root_->nid();
     schema_->tree_depth  = 2;
     schema_->set_dirty(true);
-    schema_->unlock();
+    schema_->write_unlock();
 }
 
 Tree::TreeNodeFactory::TreeNodeFactory(Tree *tree)

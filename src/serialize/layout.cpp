@@ -9,6 +9,7 @@
 
 #include "serialize/layout.h"
 #include "util/logger.h"
+#include "util/atomic.h"
 #include "util/bits.h"
 #include "util/crc.h"
 
@@ -23,12 +24,14 @@ static void aio_complete_handler(void *context, AIOStatus status)
     delete cb;
 }
 
-Layout::Layout(AIOFile* aio_file, 
+Layout::Layout(AIOFile* aio_file,
                size_t length,
-               const Options& options)
+               const Options& options,
+               Status *status)
 : aio_file_(aio_file),
   length_(length),
   options_(options),
+  status_(status),
   offset_(0),
   superblock_(new SuperBlock),
   fly_writes_(0),
@@ -98,6 +101,9 @@ bool Layout::init(bool create)
 
 Block* Layout::read(bid_t bid, bool skeleton_only)
 {
+    // status
+    ATOMIC_ADD(&status_->status_block_read_num, 1);
+
     BlockMeta meta;
     if (!get_block_meta(bid, meta)) {
         LOG_INFO("read block error, cannot find block bid " << hex << bid << dec);
@@ -151,6 +157,9 @@ Block* Layout::read(bid_t bid, bool skeleton_only)
 
 Block* Layout::read(bid_t bid, uint32_t offset, uint32_t size, uint32_t subblock_crc)
 {
+    // status
+    ATOMIC_ADD(&status_->status_subblock_read_num, 1);
+
     BlockMeta meta;
     if (!get_block_meta(bid, meta)) {
         LOG_INFO("read block error, cannot find block bid " << hex << bid << dec);
@@ -253,6 +262,9 @@ void Layout::handle_async_read(AsyncReadReq *req, AIOStatus status)
 
 void Layout::async_write(bid_t bid, Block *block, uint32_t skeleton_size, Callback *cb)
 {
+    // status
+    ATOMIC_ADD(&status_->status_async_write_num, 1);
+
     // assumpt buffer inside block is aligned
     assert(block->capacity() == PAGE_ROUND_UP(block->size()));
 

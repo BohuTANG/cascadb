@@ -13,6 +13,7 @@
 #include "util/logger.h"
 #include "util/crc.h"
 #include "util/bloom.h"
+#include "util/atomic.h"
 
 using namespace std;
 using namespace cascadb;
@@ -98,7 +99,53 @@ bool InnerNode::write(const Msg& m)
     return true;
 }
 
-bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent){
+void InnerNode::maybe_cascade()
+{
+    // read lock
+    read_lock();
+
+    int idx = -1;
+    if (msgcnt_ >= tree_->options_.inner_node_msg_count) {
+        idx = find_msgbuf_maxcnt();
+    } else if (size() >= tree_->options_.inner_node_page_size) {
+        idx = find_msgbuf_maxsz();
+    } else {
+        read_unlock();
+        return;
+    }
+   
+    assert(idx >= 0);
+    MsgBuf* b = msgbuf(idx);
+    bid_t nid = child(idx);
+
+    DataNode *node = NULL;
+    if (nid == NID_NIL) {
+        // cannot be inner node
+        assert(bottom_);
+        node = tree_->new_leaf_node();
+        node->inc_ref();
+        set_child(idx, node->nid());
+    } else {
+        node = tree_->load_node(nid, false);
+        node->inc_ref();
+    }
+
+    // read unlock
+    read_unlock();
+
+    assert(node);
+    node->cascade(b, this);
+    node->dec_ref();
+
+    // root node checking
+    if (this == tree_->root()) {
+        if ((pivots_.size() + 1) > tree_->options_.inner_node_children_number) {
+            split(NULL);
+        }
+    }
+}
+
+bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent) {
     // locks:
     // parent read-lock is race condiation with cache flush
     read_lock();
@@ -113,7 +160,10 @@ bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent){
         parent->read_unlock();
         read_unlock();
         return true;
-    } 
+    }
+
+    // status
+    ATOMIC_ADD(&tree_->status_->status_innernode_cascade_num, 1);
 
     // lazy load
     if (status_ == kSkeletonLoaded) {
@@ -125,7 +175,7 @@ bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent){
     end = mb->end(); // range end
     size_t i = 0;
     while (it != end && i < pivots_.size()) {
-        if( comp_pivot(it->key, i) < 0 ) {
+        if (comp_pivot(it->key, i) < 0) {
             it ++;
         } else {
             if (rs != it) {
@@ -154,6 +204,10 @@ bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent){
 
     if ((pivots_.size() + 1) > tree_->options_.inner_node_children_number) {
         split(parent);
+    } 
+    
+    if (pivots_.size() == 0) {
+        parent->rm_pivot(nid_);
     }
     
     return true;
@@ -271,7 +325,7 @@ void InnerNode::insert_msgbuf(const Msg& m, int idx)
 
     msgcnt_ = msgcnt_ + b->count() - oldcnt;
     msgbufsz_ = msgbufsz_ + b->size() - oldsz;
-    b->unlock();
+    b->write_unlock();
 }
 
 void InnerNode::insert_msgbuf(MsgBuf::Iterator begin, 
@@ -288,7 +342,7 @@ void InnerNode::insert_msgbuf(MsgBuf::Iterator begin,
 
     msgcnt_ = msgcnt_ + b->count() - oldcnt;
     msgbufsz_ = msgbufsz_ + b->size() - oldsz;
-    b->unlock();
+    b->write_unlock();
 }
 
 int InnerNode::find_msgbuf_maxcnt()
@@ -301,7 +355,7 @@ int InnerNode::find_msgbuf_maxcnt()
         if (it->msgbuf->count() > maxcnt ) {
             it->msgbuf->read_lock();
             maxcnt = it->msgbuf->count();
-            it->msgbuf->unlock();
+            it->msgbuf->read_unlock();
             ret = idx;
         }
     }
@@ -318,61 +372,20 @@ int InnerNode::find_msgbuf_maxsz()
         if (it->msgbuf->size() > maxsz ) {
             it->msgbuf->read_lock();
             maxsz = it->msgbuf->size();
-            it->msgbuf->unlock();
+            it->msgbuf->read_unlock();
             ret = idx;
         }
     }
     return ret;
 }
 
-void InnerNode::maybe_cascade()
-{
-    // read lock
-    read_lock();
-
-    int idx = -1;
-    if (msgcnt_ >= tree_->options_.inner_node_msg_count) {
-        idx = find_msgbuf_maxcnt();
-    } else if (size() >= tree_->options_.inner_node_page_size) {
-        idx = find_msgbuf_maxsz();
-    } else {
-        read_unlock();
-        return;
-    }
-   
-    assert(idx >= 0);
-    MsgBuf* b = msgbuf(idx);
-    bid_t nid = child(idx);
-
-    DataNode *node = NULL;
-    if (nid == NID_NIL) {
-        // cannot be inner node
-        assert(bottom_);
-        node = tree_->new_leaf_node();
-        set_child(idx, node->nid());
-    } else {
-        node = tree_->load_node(nid, false);
-    }
-
-    // read unlock
-    read_unlock();
-
-    assert(node);
-    node->cascade(b, this);
-    node->dec_ref();
-
-    // root node checking
-    if (this == tree_->root()) {
-        if ((pivots_.size() + 1) > tree_->options_.inner_node_children_number) {
-            split(NULL);
-        }
-    }
-}
-
 void InnerNode::add_pivot(Slice key, bid_t nid)
 {
     // lock
     write_lock();
+
+    // status
+    ATOMIC_ADD(&tree_->status_->status_innernode_add_pivot_num, 1);
 
     if (status_ == kSkeletonLoaded) {
         load_all_msgbuf();
@@ -394,6 +407,9 @@ void InnerNode::split(InnerNode *parent)
 {
     // try lock
     if (!try_write_lock()) return;
+
+    // status
+    ATOMIC_ADD(&tree_->status_->status_innernode_split_num, 1);
 
     assert(pivots_.size() > 1);
     size_t n = pivots_.size()/2;
@@ -460,14 +476,20 @@ void InnerNode::rm_pivot(bid_t nid)
 {
     // lock node
     write_lock();
+
+    // status
+    ATOMIC_ADD(&tree_->status_->status_innernode_rm_pivot_num, 1);
+
     if (status_ == kSkeletonLoaded) {
         load_all_msgbuf();
     }
 
     if (first_child_ == nid) {
-        /// @todo this is true only for single thread, fix me
+        // here is thread safe
+        // since we acquire the node write lock
         assert(first_msgbuf_->count() == 0);
         msgbufsz_ -= first_msgbuf_->size();
+
         delete first_msgbuf_;
         
         if (pivots_.size() == 0) {
@@ -475,7 +497,7 @@ void InnerNode::rm_pivot(bid_t nid)
             dead_ = true;
 
             if (this == tree_->root())
-                tree_->collapse(); 
+                tree_->collapse();
 
             // unlock
             write_unlock();
@@ -490,39 +512,41 @@ void InnerNode::rm_pivot(bid_t nid)
         pivots_.erase(pivots_.begin());
     } else {
         vector<Pivot>::iterator it;
-        for (it = pivots_.begin(); 
+        for (it = pivots_.begin();
             it != pivots_.end(); it ++) {
             if (it->child == nid) {
+                // here is thread safe
+                // since we acquire the node write lock
+                assert(it->msgbuf->count() == 0);
+                msgbufsz_ -= it->msgbuf->size();
+                delete it->msgbuf;
+
+                pivots_sz_ -= pivot_size(it->key);
+                pivots_.erase(it);
+
                 break;
             }
         }
-
-        assert(it != pivots_.end());
-        /// @todo this is true only for single thread, fix me
-        assert(it->msgbuf->count() == 0);
-        msgbufsz_ -= it->msgbuf->size();
-        delete it->msgbuf;
-
-        pivots_sz_ -= pivot_size(it->key);
-        pivots_.erase(it);
     }
     set_dirty(true);
 
-    // unlock 
+    // unlock
     write_unlock();
 }
 
 bool InnerNode::find(Slice key, Slice& value, InnerNode *parent)
 {
+    int idx;
     bool ret = false;
+
+    // read lock
     read_lock();
 
-    int idx = find_pivot(key);
-
+    idx = find_pivot(key);
     MsgBuf* b = msgbuf(idx, key);
     // if b is NULL, means rejected by bloom filter
     if (b) {
-        b->read_lock(); 
+        b->read_lock();
         MsgBuf::Iterator it = b->find(key);
         if (it != b->end() && it->key == key ) {
             if (it->type == Put) {
@@ -530,25 +554,32 @@ bool InnerNode::find(Slice key, Slice& value, InnerNode *parent)
                 ret = true;
             }
             // otherwise deleted
-            b->unlock();
-            unlock();
+            b->read_unlock();
+            read_unlock();
             return ret;
         }
-        b->unlock();
+        b->read_unlock();
     }
 
     bid_t chidx = child(idx);
     if (chidx == NID_NIL) {
         assert(idx == 0); // must be the first child
-        unlock();
+        read_unlock();
         return false;
     }
     
+    // read unlock
+    read_unlock();
+
     // find in child
     DataNode* ch = tree_->load_node(chidx, true);
     assert(ch);
+
+    ch->inc_ref();
     ret = ch->find(key, value, this);
     ch->dec_ref();
+
+
     return ret;
 }
 
@@ -690,7 +721,7 @@ bool InnerNode::load_msgbuf(int idx)
 
     // lazy load, upgrade lock to write lock
     // TODO: write a upgradable rwlock
-    unlock();
+    read_unlock();
     write_lock();
 
     MsgBuf **pb = (idx == 0) ? &first_msgbuf_ : &(pivots_[idx-1].msgbuf);
@@ -702,7 +733,7 @@ bool InnerNode::load_msgbuf(int idx)
         delete b;
     }
 
-    unlock();
+    write_unlock();
     read_lock();
 
     tree_->layout_->destroy(block);
@@ -721,12 +752,12 @@ bool InnerNode::load_all_msgbuf()
 
     // lazy load, upgrade lock to write lock
     // TODO: write a upgradable rwlock
-    unlock();
+    read_unlock();
     write_lock();
 
     bool ret = load_all_msgbuf(reader);
 
-    unlock();
+    write_unlock();
     read_lock();
 
     tree_->layout_->destroy(block);
@@ -979,6 +1010,9 @@ bool LeafNode::cascade(MsgBuf *mb, InnerNode* parent)
         return true;
     }
 
+    // status
+    ATOMIC_ADD(&tree_->status_->status_leaf_cascade_num, 1);
+
     if (status_ == kSkeletonLoaded) {
         load_all_buckets();
     }
@@ -1063,12 +1097,16 @@ void LeafNode::split(InnerNode *parent)
     // try lock
     if (!try_write_lock()) return;
 
+    // status
+    ATOMIC_ADD(&tree_->status_->status_leaf_split_num, 1);
+
     balancing_ = true;
     assert(records_.size() > 1);
    
     // create new leaf
     LeafNode *nl = tree_->new_leaf_node();
     assert(nl);
+    nl->inc_ref();
 
     // set siblings
     nl->left_sibling_ = nid_;
@@ -1076,10 +1114,11 @@ void LeafNode::split(InnerNode *parent)
     if(right_sibling_ >= NID_LEAF_START) {
         LeafNode *rl = (LeafNode*)tree_->load_node(right_sibling_, false);
         assert(rl);
+        rl->inc_ref();
         rl->write_lock();
         rl->left_sibling_ = nl->nid_;
         rl->set_dirty(true);
-        rl->unlock();
+        rl->write_unlock();
         rl->dec_ref();
     }
     right_sibling_ = nl->nid_;
@@ -1110,6 +1149,9 @@ void LeafNode::merge(InnerNode *parent)
     // lock
     if (!try_write_lock()) return;
 
+    // status
+    ATOMIC_ADD(&tree_->status_->status_leaf_merge_num, 1);
+
     balancing_ = true;
     assert(records_.size() == 0);
     if (records_.size() > 0) {
@@ -1119,19 +1161,21 @@ void LeafNode::merge(InnerNode *parent)
     if (left_sibling_ >= NID_LEAF_START) {
         LeafNode *ll = (LeafNode*)tree_->load_node(left_sibling_, false);
         assert(ll);
+        ll->inc_ref();
         ll->write_lock();
         ll->right_sibling_ = right_sibling_;
         ll->set_dirty(true);
-        ll->unlock();
+        ll->write_unlock();
         ll->dec_ref();
     }
     if (right_sibling_ >= NID_LEAF_START) {
         LeafNode *rl = (LeafNode*)tree_->load_node(right_sibling_, false);
         assert(rl);
+        rl->inc_ref();
         rl->write_lock();
         rl->left_sibling_ = left_sibling_;
         rl->set_dirty(true);
-        rl->unlock();
+        rl->write_unlock();
         rl->dec_ref();
     }
     dead_ = true;
@@ -1144,7 +1188,7 @@ void LeafNode::merge(InnerNode *parent)
     write_unlock();
 }
 
-bool LeafNode::find(Slice key, Slice& value, InnerNode *parent) 
+bool LeafNode::find(Slice key, Slice& value, InnerNode *parent)
 {
     assert(parent);
     read_lock();
@@ -1170,7 +1214,7 @@ bool LeafNode::find(Slice key, Slice& value, InnerNode *parent)
         }
         bucket = records_.bucket(idx - 1);
         assert(bucket);
-    } 
+    }
 
     bool ret = false;
     vector<Record>::iterator it = lower_bound(
@@ -1427,7 +1471,7 @@ bool LeafNode::load_bucket(size_t idx)
 
     // lazy load, upgrade lock to write lock
     // TODO: write a upgradable rwlock
-    unlock();
+    read_unlock();
     write_lock();
     if (records_.bucket(idx) == NULL) {
         records_.set_bucket(idx, bucket);
@@ -1436,7 +1480,7 @@ bool LeafNode::load_bucket(size_t idx)
         // the same block at the same time
         delete bucket;
     }
-    unlock();
+    write_unlock();
     read_lock();
 
     tree_->layout_->destroy(block);

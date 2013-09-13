@@ -218,12 +218,7 @@ public:
     {
         return lock_.try_write_lock();
     }
-    
-    void unlock()
-    {
-        lock_.unlock();
-    }
-    
+   
 protected:
     std::string     table_name_;
     bid_t           nid_;
