@@ -7,7 +7,7 @@ using namespace cascadb;
 using namespace std;
 
 #define BUFSIZE (4096)
-TEST(crc16, calc) 
+TEST(crc32, calc) 
 {
     void *buf;
     if (posix_memalign(&buf, BUFSIZE, BUFSIZE)) {
@@ -24,6 +24,5 @@ TEST(crc16, calc)
     writer.writeUInt32(1234567);
     writer.writeUInt16(12345);
 
-    EXPECT_EQ(cascadb::crc32(writer.start(), writer.pos()), 
-            cascadb::crc32(writer.start(), writer.pos()));
+    EXPECT_EQ(cascadb::crc32(writer.start(), writer.pos()), 20146012U);
 }

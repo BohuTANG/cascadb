@@ -550,7 +550,7 @@ private:
     Options opts;
     opts.dir = directory_;
     opts.comparator = comparator_;
-    opts.compress = kSnappyCompress;
+    opts.compress = FLAGS_method;
     if (FLAGS_cache_size) {
         opts.cache_limit = FLAGS_cache_size;
     }
