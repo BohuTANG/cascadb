@@ -71,6 +71,7 @@ static const char* FLAGS_db = NULL;
 
 static enum Compress FLAGS_method = kSnappyCompress;
 
+static bool FLAGS_logopen = false;
 
 // Helper for quickly generating random values.
 class RandomGenerator {
@@ -275,6 +276,7 @@ struct ThreadState {
 class Benchmark {
 private:
   Directory *directory_;
+  Directory *log_directory_;
   Comparator *comparator_;
   DB *db_;
   int db_num_;
@@ -386,6 +388,7 @@ private:
 
   Benchmark()
   : directory_(create_fs_directory(FLAGS_db)),
+    log_directory_(create_fs_directory(FLAGS_db)),
     comparator_(new LexicalComparator()),
     db_(NULL),
     db_num_(0),
@@ -399,6 +402,7 @@ private:
     delete db_;
     delete comparator_;
     delete directory_;
+    delete log_directory_;
   }
 
 
@@ -549,6 +553,9 @@ private:
 
     Options opts;
     opts.dir = directory_;
+    if (FLAGS_logopen)
+        opts.log_dir = log_directory_;
+
     opts.comparator = comparator_;
     opts.compress = FLAGS_method;
     if (FLAGS_cache_size) {
@@ -680,6 +687,9 @@ int main(int argc, char** argv)
                 FLAGS_method = kQuicklzCompress;
             else if (strcmp(argv[i] + strlen("--rowformat="), "no") == 0)
                 FLAGS_method = kNoCompress;
+        } else if(strncmp(argv[i], "--logopen=", 1) == 0) {
+            if (strcmp(argv[i] + strlen("--logopen="), "Y") == 0)
+                FLAGS_logopen = true;
         } else {
             cerr << "Invalid flag '" << argv[i] << "'" << endl;
             exit(1);

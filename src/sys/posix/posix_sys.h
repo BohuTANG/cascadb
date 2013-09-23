@@ -82,7 +82,6 @@ private:
     Mutex* mu_;
 };
 
-
 typedef struct timeval Time;
 typedef time_t Second;
 typedef useconds_t USecond;
@@ -96,6 +95,42 @@ extern void sleep(Second sec);
 extern void usleep(USecond usec);
 // t2 - t1
 extern USecond interval_us(Time t1, Time t2);
+
+
+class Cron {
+
+public:
+    Cron()
+    {
+        alive_ = false;
+        init_ = false;
+    }
+    ~Cron();
+
+    typedef void* (*func)(void* arg);
+    bool init(func f, void *arg, uint32_t period_ms);
+    void start();
+    void shutdown();
+    bool change_period(uint32_t period_ms);
+
+    func f() const { return f_; }
+    void *arg() const { return arg_; }
+    bool alive() const { return alive_; }
+    uint32_t period_ms() const { return period_ms_; }
+
+    pthread_cond_t PCOND;
+    pthread_mutex_t PMTX;
+    struct timespec last_call_time_;
+
+private:
+    func f_;
+    uint32_t period_ms_;
+    void *arg_;
+    bool alive_;
+    bool init_;
+
+    Thread *thread_;
+};
 
 }
 

@@ -12,6 +12,7 @@ namespace cascadb {
 
 class Directory;
 class Comparator;
+class LogMgr;
 
 enum Compress {
     kNoCompress,      // No compression
@@ -24,6 +25,7 @@ public:
     // Set defaults
     Options() {
         dir = NULL;
+        log_dir = NULL;
         comparator = NULL;
 
         inner_node_page_size = 4<<20;       // 4M, bigger inner node improve write performance
@@ -42,14 +44,22 @@ public:
                                             // you should NOT use it
         cache_limit = 512 << 20;            // 512M, it's best to be set twice of the total size of inner nodes
         cache_dirty_high_watermark = 30;    // 30%
-        cache_dirty_expire = 60000;         // 1 minute
+        cache_dirty_expire = 30000;         // 30s
         cache_writeback_ratio = 1;          // 1%
         cache_writeback_interval = 100;     // 100ms
         cache_evict_ratio = 1;              // 1%
-        cache_evict_high_watermark = 95;    //95%
+        cache_evict_high_watermark = 95;    // 95%
 
         compress = kNoCompress;
         check_crc = false;
+
+        log_bufsize_byte = 16<<20;          // 16M, log buffer size
+        log_filesize_byte = 256<<20;        // 256M, log file size
+        log_flush_period_ms = 1000;         // 1s
+        log_fsync_period_ms = 1000;         // 1s
+        log_clean_period_ms = 10000;        // 10s
+
+        checkpoint_period_ms = 60000;       // 30s
     }
 
     /******************************
@@ -58,6 +68,8 @@ public:
 
     // Directory where data files and WAL store
     Directory *dir;
+
+    Directory *log_dir;
 
     // Key comparator
     Comparator *comparator;
@@ -117,6 +129,9 @@ public:
     // in percentage * 100
     unsigned int cache_evict_high_watermark;
 
+    // how often in ms the evictor thread runs
+    //unsigned int cache_evict_period_ms;
+
     /********************************
             Layout Parameters
     ********************************/
@@ -124,6 +139,28 @@ public:
     Compress compress;
 
     bool check_crc;
+
+    /********************************
+            Log Parameters
+    ********************************/
+
+    // log max buffer size in bytes
+    unsigned int log_bufsize_byte;
+
+    // log max file size in bytes
+    unsigned int log_filesize_byte;
+
+    // how often the log flush buffer to disk, in milliseconds
+    unsigned int log_flush_period_ms;
+
+    // how often the log fsync, in milliseconds
+    unsigned int log_fsync_period_ms;
+
+    // how often the log files clean, in milliseconds
+    unsigned int log_clean_period_ms;
+
+    // how often the checkpoint makes, in milliseconds
+    unsigned int checkpoint_period_ms;
 };
 
 }

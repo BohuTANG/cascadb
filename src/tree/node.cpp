@@ -13,7 +13,6 @@
 #include "util/logger.h"
 #include "util/crc.h"
 #include "util/bloom.h"
-#include "util/atomic.h"
 
 using namespace std;
 using namespace cascadb;
@@ -62,9 +61,13 @@ InnerNode::~InnerNode()
 {
     delete first_msgbuf_;
     first_msgbuf_ = NULL;
+    if (!first_filter_.empty())
+        first_filter_.destroy();
     for(vector<Pivot>::iterator it = pivots_.begin();
         it != pivots_.end(); it++) {
         it->key.destroy();
+        if (!it->filter.empty())
+            it->filter.destroy();
         delete it->msgbuf;
     }
     pivots_.clear();
@@ -123,11 +126,9 @@ void InnerNode::maybe_cascade()
         // cannot be inner node
         assert(bottom_);
         node = tree_->new_leaf_node();
-        node->inc_ref();
         set_child(idx, node->nid());
     } else {
         node = tree_->load_node(nid, false);
-        node->inc_ref();
     }
 
     // read unlock
@@ -135,7 +136,6 @@ void InnerNode::maybe_cascade()
 
     assert(node);
     node->cascade(b, this);
-    node->dec_ref();
 
     // root node checking
     if (this == tree_->root()) {
@@ -143,6 +143,8 @@ void InnerNode::maybe_cascade()
             split(NULL);
         }
     }
+
+    node->dec_ref();
 }
 
 bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent) {
@@ -422,6 +424,7 @@ void InnerNode::split(InnerNode *parent)
     
     ni->first_child_ = pivots_[n].child;
     ni->first_msgbuf_ = pivots_[n].msgbuf;
+    ni->first_filter_ = pivots_[n].filter;
     ni->pivots_.resize(n1);
     std::copy(pivots_.begin() + n + 1, pivots_.end(), ni->pivots_.begin());
     pivots_.resize(n);
@@ -467,6 +470,8 @@ void InnerNode::split(InnerNode *parent)
         assert(parent);
         parent->add_pivot(k, ni->nid_);
     }
+    k.destroy();
+    ni->dec_ref();
 
     // unlock
     write_unlock();
@@ -512,17 +517,21 @@ void InnerNode::rm_pivot(bid_t nid)
         pivots_.erase(pivots_.begin());
     } else {
         vector<Pivot>::iterator it;
+        vector<Pivot>::iterator it_tmp;
         for (it = pivots_.begin();
-            it != pivots_.end(); it ++) {
-            if (it->child == nid) {
+            it != pivots_.end();) {
+            it_tmp = it;
+            it++;
+
+            if (it_tmp->child == nid) {
                 // here is thread safe
                 // since we acquire the node write lock
-                assert(it->msgbuf->count() == 0);
-                msgbufsz_ -= it->msgbuf->size();
-                delete it->msgbuf;
+                assert(it_tmp->msgbuf->count() == 0);
+                msgbufsz_ -= it_tmp->msgbuf->size();
+                delete it_tmp->msgbuf;
 
-                pivots_sz_ -= pivot_size(it->key);
-                pivots_.erase(it);
+                pivots_sz_ -= pivot_size(it_tmp->key);
+                pivots_.erase(it_tmp);
 
                 break;
             }
@@ -575,7 +584,6 @@ bool InnerNode::find(Slice key, Slice& value, InnerNode *parent)
     DataNode* ch = tree_->load_node(chidx, true);
     assert(ch);
 
-    ch->inc_ref();
     ret = ch->find(key, value, this);
     ch->dec_ref();
 
@@ -910,8 +918,9 @@ bool InnerNode::write_to(BlockWriter& writer, size_t& skeleton_size)
     // first msgbuf bloom filter
     std::string filter;
     first_msgbuf_->get_filter(&filter);
-    first_filter_ = Slice(filter);
-    if (!writer.writeSlice(first_filter_)) return false;
+
+    Slice ff_tmp(filter);
+    if (!writer.writeSlice(ff_tmp)) return false;
     filter.clear();
 
     for (size_t i = 0; i < pivots_.size(); i++) {
@@ -965,8 +974,8 @@ bool InnerNode::write_msgbuf(BlockWriter& writer, MsgBuf *mb, Slice buffer)
                         LeafNode
 *********************************************************/
 
-LeafNode::LeafNode(const std::string& table_name, bid_t nid, Tree *tree)
-: DataNode(table_name, nid, tree),
+LeafNode::LeafNode(uint32_t tbn, bid_t nid, Tree *tree)
+: DataNode(tbn, nid, tree),
   balancing_(false),
   left_sibling_(NID_NIL),
   right_sibling_(NID_NIL),
@@ -1106,7 +1115,6 @@ void LeafNode::split(InnerNode *parent)
     // create new leaf
     LeafNode *nl = tree_->new_leaf_node();
     assert(nl);
-    nl->inc_ref();
 
     // set siblings
     nl->left_sibling_ = nid_;
@@ -1114,7 +1122,6 @@ void LeafNode::split(InnerNode *parent)
     if(right_sibling_ >= NID_LEAF_START) {
         LeafNode *rl = (LeafNode*)tree_->load_node(right_sibling_, false);
         assert(rl);
-        rl->inc_ref();
         rl->write_lock();
         rl->left_sibling_ = nl->nid_;
         rl->set_dirty(true);
@@ -1129,15 +1136,16 @@ void LeafNode::split(InnerNode *parent)
 
     set_dirty(true);
     nl->set_dirty(true);
-    nl->dec_ref();
 
     balancing_ = false;
 
-    assert(parent);
-    parent->add_pivot(k, nl->nid_);
-
     // unlock
     write_unlock();
+
+    assert(parent);
+    parent->add_pivot(k, nl->nid_);
+    nl->dec_ref();
+
 }
 
 void LeafNode::merge(InnerNode *parent)
@@ -1161,7 +1169,6 @@ void LeafNode::merge(InnerNode *parent)
     if (left_sibling_ >= NID_LEAF_START) {
         LeafNode *ll = (LeafNode*)tree_->load_node(left_sibling_, false);
         assert(ll);
-        ll->inc_ref();
         ll->write_lock();
         ll->right_sibling_ = right_sibling_;
         ll->set_dirty(true);
@@ -1171,7 +1178,6 @@ void LeafNode::merge(InnerNode *parent)
     if (right_sibling_ >= NID_LEAF_START) {
         LeafNode *rl = (LeafNode*)tree_->load_node(right_sibling_, false);
         assert(rl);
-        rl->inc_ref();
         rl->write_lock();
         rl->left_sibling_ = left_sibling_;
         rl->set_dirty(true);

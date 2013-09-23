@@ -5,6 +5,7 @@
 #ifndef CASCADB_STORE_FS_DIRECTORY_H_
 #define CASCADB_STORE_FS_DIRECTORY_H_
 
+#include <vector>
 #include "cascadb/directory.h"
 
 namespace cascadb {

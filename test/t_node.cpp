@@ -42,9 +42,12 @@ TEST(Tree, bootstrap)
     AIOFile *file = dir->open_aio_file("tree_test");
     Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts, &status);
+
+    LogMgr *lmgr = new LogMgr(opts);
+
+    Cache *cache = new Cache(opts, &status, lmgr);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, &status, cache, layout);
+    Tree *tree = new Tree(0U, opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
     
     InnerNode *n1 = tree->root_;
@@ -196,8 +199,15 @@ TEST(Tree, bootstrap)
     CHK_REC(l4->records_[1], "g", "2");
     CHK_REC(l4->records_[2], "h", "1");
 
+    l1->dec_ref();
+    l2->dec_ref();
+    l3->dec_ref();
+    l4->dec_ref();
+    n2->dec_ref();
+
     delete tree;
     delete cache;
+    delete lmgr;
     delete layout;
     delete file;
     delete dir;
@@ -217,9 +227,11 @@ TEST(InnerNode, serialize)
     AIOFile *file = dir->open_aio_file("tree_test");
     Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts, &status);
+    LogMgr *lmgr = new LogMgr(opts);
+    ASSERT_TRUE(lmgr->init());
+    Cache *cache = new Cache(opts, &status, lmgr);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, &status, cache, layout);
+    Tree *tree = new Tree(0U, opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     char buffer[40960];
@@ -227,7 +239,7 @@ TEST(InnerNode, serialize)
     BlockReader reader(&blk);
     BlockWriter writer(&blk);
 
-    InnerNode n1("", NID_START, tree);
+    InnerNode n1(0U, NID_START, tree);
     n1.bottom_ = true;
     n1.first_child_ = NID_LEAF_START;
     n1.first_msgbuf_ = new MsgBuf(opts.comparator);
@@ -242,7 +254,7 @@ TEST(InnerNode, serialize)
     size_t skeleton_size;
     EXPECT_TRUE(n1.write_to(writer, skeleton_size) == true);
 
-    InnerNode n2("", NID_START, tree);
+    InnerNode n2(0U, NID_START, tree);
     EXPECT_TRUE(n2.read_from(reader, false) == true);
 
     EXPECT_TRUE(n2.bottom_ == true);
@@ -267,6 +279,7 @@ TEST(InnerNode, serialize)
 
     delete tree;
     delete cache;
+    delete lmgr;
     delete layout;
     delete file;
     delete dir;
@@ -284,9 +297,11 @@ TEST(InnerNode, add_pivot)
     AIOFile *file = dir->open_aio_file("tree_test");
     Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts, &status);
+    LogMgr *lmgr = new LogMgr(opts);
+    ASSERT_TRUE(lmgr->init());
+    Cache *cache = new Cache(opts, &status, lmgr);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, &status, cache, layout);
+    Tree *tree = new Tree(0U, opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     InnerNode *n1 = tree->new_inner_node();
@@ -311,9 +326,11 @@ TEST(InnerNode, add_pivot)
     EXPECT_EQ("d", n1->pivots_[0].key);
     EXPECT_EQ("e", n1->pivots_[1].key);
     EXPECT_EQ("f", n1->pivots_[2].key);
+    n1->dec_ref();
 
     delete tree;
     delete cache;
+    delete lmgr;
     delete layout;
     delete file;
     delete dir;
@@ -331,9 +348,11 @@ TEST(InnerNode, split)
     AIOFile *file = dir->open_aio_file("tree_test");
     Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts, &status);
+    LogMgr *lmgr = new LogMgr(opts);
+    ASSERT_TRUE(lmgr->init());
+    Cache *cache = new Cache(opts, &status, lmgr);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, &status, cache, layout);
+    Tree *tree = new Tree(0U, opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     InnerNode *n1 = tree->new_inner_node();
@@ -378,8 +397,12 @@ TEST(InnerNode, split)
     EXPECT_EQ(1U, n3->pivots_.size());
     EXPECT_EQ("f", n3->pivots_[0].key);
 
+    n1->dec_ref();
+    n2->dec_ref();
+    n3->dec_ref();
     delete tree;
     delete cache;
+    delete lmgr;
     delete layout;
     delete file;
     delete dir;
@@ -398,9 +421,11 @@ TEST(InnerNode, root_pileup)
     AIOFile *file = dir->open_aio_file("tree_test");
     Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts, &status);
+    LogMgr *lmgr = new LogMgr(opts);
+    ASSERT_TRUE(lmgr->init());
+    Cache *cache = new Cache(opts, &status, lmgr);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, &status, cache, layout);
+    Tree *tree = new Tree(0U, opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     // root pileup
@@ -414,6 +439,7 @@ TEST(InnerNode, root_pileup)
 
     delete tree;
     delete cache;
+    delete lmgr;
     delete layout;
     delete file;
     delete dir;
@@ -431,9 +457,11 @@ TEST(InnerNode, rm_pivot)
     AIOFile *file = dir->open_aio_file("tree_test");
     Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts, &status);
+    LogMgr *lmgr = new LogMgr(opts);
+    ASSERT_TRUE(lmgr->init());
+    Cache *cache = new Cache(opts, &status, lmgr);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, &status, cache, layout);
+    Tree *tree = new Tree(0U, opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     InnerNode *n2 = tree->new_inner_node();
@@ -459,11 +487,21 @@ TEST(InnerNode, rm_pivot)
     n2->add_pivot("f", NID_START + 103);
     EXPECT_EQ(3U, n2->pivots_.size());
 
-    // remove the 2th pivot
+    // remove the 2th pivot:'e'
     n2->rm_pivot(NID_START + 101);
     EXPECT_EQ(2U, n2->pivots_.size());
     EXPECT_EQ("d", n2->pivots_[0].key);
     EXPECT_EQ("f", n2->pivots_[1].key);
+
+    // remove the 1th pivot: 'd'
+    n2->rm_pivot(NID_START + 102);
+    EXPECT_EQ(1U, n2->pivots_.size());
+    EXPECT_EQ("f", n2->pivots_[0].key);
+
+    // remove the pivot: 'f'
+    n2->rm_pivot(NID_START + 103);
+    EXPECT_EQ(0U, n2->pivots_.size());
+
 
     // remove root only one pivot
     // root to collapse
@@ -472,8 +510,11 @@ TEST(InnerNode, rm_pivot)
     EXPECT_TRUE(old_root != tree->root_);
     EXPECT_EQ(1U, status.status_tree_collapse_num);
 
+    n2->dec_ref();
+
     delete tree;
     delete cache;
+    delete lmgr;
     delete layout;
     delete file;
     delete dir;
@@ -493,9 +534,11 @@ TEST(LeafNode, split_and_merge)
     AIOFile *file = dir->open_aio_file("tree_test");
     Layout *layout = new Layout(file, 0, opts, &status);
     ASSERT_TRUE(layout->init(true));
-    Cache *cache = new Cache(opts, &status);
+    LogMgr *lmgr = new LogMgr(opts);
+    ASSERT_TRUE(lmgr->init());
+    Cache *cache = new Cache(opts, &status, lmgr);
     ASSERT_TRUE(cache->init());
-    Tree *tree = new Tree("", opts, &status, cache, layout);
+    Tree *tree = new Tree(0U, opts, &status, cache, layout);
     ASSERT_TRUE(tree->init());
 
     InnerNode *n1 = tree->new_inner_node();
@@ -560,6 +603,7 @@ TEST(LeafNode, split_and_merge)
 
     delete tree;
     delete cache;
+    delete lmgr;
     delete layout;
     delete file;
     delete dir;

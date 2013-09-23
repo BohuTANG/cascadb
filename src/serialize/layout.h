@@ -88,6 +88,17 @@ public:
     // Destrcut a Block object
     void destroy(Block* block);
 
+    // last checkpoint lsn of this layout
+    inline uint64_t checkpoint_lsn() {
+        return superblock_->lsn;
+    }
+
+    // set the superblock checkpoint lsn
+    void make_checkpoint(uint64_t lsn)
+    {
+        superblock_->lsn = lsn;
+    }
+
 protected:
     // read and deserialize superblock
     bool load_superblock();

@@ -11,7 +11,7 @@ void *body1(void* arg)
     return NULL;
 }
 
-TEST(Thread, run) {
+TEST(posix_thread, run) {
     Thread thr(body1);
     count1 = 0;
     thr.start(NULL);
@@ -28,7 +28,7 @@ void *body2(void* arg)
     return NULL;
 }  
 
-TEST(Mutex, lock) {
+TEST(posix_mutex, lock) {
     Thread thr1(body2);
     Thread thr2(body2);
     
@@ -44,7 +44,7 @@ TEST(Mutex, lock) {
     EXPECT_NEAR(200000, interval_us(t1, t2), 5000);
 }
 
-TEST(Mutex, trylock) {
+TEST(posix_mutex, trylock) {
     Thread thr(body2);
     thr.start(NULL);
     cascadb::usleep(1000);
@@ -57,7 +57,7 @@ TEST(Mutex, trylock) {
     thr.join();
 }
 
-TEST(Mutex, timedlock) {
+TEST(posix_mutex, timedlock) {
     Thread thr(body2);
     thr.start(NULL);
     cascadb::usleep(1000);
@@ -83,7 +83,7 @@ void *body3(void* arg)
     return NULL;
 }
 
-TEST(CondVar, wait) {
+TEST(posix_condvar, wait) {
     count = 0;
     
     Thread thr(body3);
@@ -97,7 +97,7 @@ TEST(CondVar, wait) {
     thr.join();
 }
 
-TEST(CondVar, timedwait) {
+TEST(posix_condvar, timedwait) {
     count = 0;
     
     Thread thr(body3);
@@ -124,7 +124,7 @@ void *body4(void* arg)
     return NULL;
 }
 
-TEST(RWLock, rdlock) {
+TEST(posix_rwLock, rdlock) {
     Thread thr1(body4);
     thr1.start(NULL);
 
@@ -143,4 +143,62 @@ TEST(RWLock, rdlock) {
     
     thr1.join();
     thr2.join();
+}
+
+void *run_1ms(void *arg)
+{
+    int *count = (int*)arg;
+    (*count)++;
+    cascadb::usleep(100000); //100ms
+
+    return NULL;
+}
+
+TEST(posix_cron, run) {
+    int count = 0;
+    Cron *cron = new Cron();
+    cron->init(run_1ms, &count, 200); // 200ms
+    cron->start();
+    cascadb::usleep(700000); // 700ms
+    cron->shutdown();
+
+    EXPECT_EQ(2, count);
+
+    delete cron;
+}
+
+void *run_1s(void *arg)
+{
+    int *count = (int*)arg;
+    (*count)++;
+    cascadb::sleep(1);
+
+    return NULL;
+}
+
+TEST(posix_cron, run_timeout) {
+    int count = 0;
+    Cron *cron = new Cron();
+    cron->init(run_1s, &count, 200); // 200ms
+    cron->start();
+    cascadb::sleep(3); // 3s
+    cron->shutdown();
+    EXPECT_EQ(3, count);
+
+    delete cron;
+}
+
+TEST(posix_cron, change_period) {
+    int count = 0;
+    Cron *cron = new Cron();
+    cron->init(run_1ms, &count, 500); // 500ms
+    cron->start();
+    cron->change_period(200); // change to 200ms
+    cascadb::usleep(600000); // 6ms
+    cron->change_period(0); // pause the cron
+    cron->shutdown();
+
+    EXPECT_EQ(2, count);
+
+    delete cron;
 }

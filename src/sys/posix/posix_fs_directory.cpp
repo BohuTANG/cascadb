@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <aio.h>
 #include <errno.h>
+#include <dirent.h>
 
 #include "sys/sys.h"
 #include "util/logger.h"
@@ -54,10 +55,10 @@ public:
         return sz;
     }
 
-    bool skip(size_t n)
+    bool seek(size_t n)
     {
-        if (::lseek(fd_, n, SEEK_CUR) < 0) {
-            LOG_ERROR("skip file " << path_ << ", error " << strerror(errno));
+        if (::lseek(fd_, n, SEEK_SET) < 0) {
+            LOG_ERROR("seek file " << path_ << ", error " << strerror(errno));
             return false;
         }
         return true;
@@ -105,7 +106,7 @@ public:
     bool append(Slice buf)
     {
         size_t sz;
-        sz = ::write(fd_, buf.data(), buf.size());
+        sz = ::pwrite(fd_, buf.data(), buf.size(), offset_);
         if (sz < 0) {
             LOG_ERROR("write file " << path_ << ", error " << strerror(errno));
             return false;
@@ -360,6 +361,25 @@ size_t PosixFSDirectory::file_length(const std::string& filename)
         return 0;
     }
     return (size_t) sb.st_size;
+}
+
+// get all files of dir
+bool PosixFSDirectory::get_files(std::vector<std::string> *results)
+{
+    results->clear();
+    DIR *d = opendir(dir_.c_str());
+    if (d == NULL) {
+        LOG_ERROR("get files " << dir_ << " error " << strerror(errno));
+        return false;
+    }
+
+    struct dirent *de;
+    while((de = readdir(d)) != 0) {
+        results->push_back(de->d_name);
+    }
+    closedir(d);
+
+    return true;
 }
 
 const std::string PosixFSDirectory::fullpath(const std::string& filename)

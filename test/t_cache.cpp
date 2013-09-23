@@ -12,7 +12,7 @@ using namespace cascadb;
 
 class FakeNode : public Node {
 public:
-    FakeNode(const std::string& table_name, bid_t nid) : Node(table_name, nid), data(0) {}
+    FakeNode(uint32_t tbn, bid_t nid) : Node(tbn, nid), data(0) {}
 
     bool cascade(MsgBuf *mb, InnerNode* parent) { return false; }
 
@@ -51,19 +51,21 @@ public:
 
 class FakeNodeFactory : public NodeFactory {
 public:
-    FakeNodeFactory(const std::string& table_name)
-    : table_name_(table_name)
+    FakeNodeFactory(uint32_t tbn)
+    : tbn_(tbn)
     {
     }
 
     Node* new_node(bid_t nid) {
-        return new FakeNode(table_name_, nid);
+        return new FakeNode(tbn_, nid);
     }
 
-    std::string table_name_;
+    uint32_t tbn_;
 };
 
 TEST(Cache, read_and_write) {
+    uint32_t tbn = 0;
+
     Status status;
     Options opts;
     opts.cache_limit = 4096 * 1000;
@@ -73,34 +75,40 @@ TEST(Cache, read_and_write) {
     Layout *layout = new Layout(file, 0, opts, &status);
     layout->init(true);
 
-    Cache *cache = new Cache(opts, &status);
+    LogMgr *lmgr = new LogMgr(opts);
+    ASSERT_TRUE(lmgr->init());
+
+    Cache *cache = new Cache(opts, &status, lmgr);
     cache->init();
 
-    NodeFactory *factory = new FakeNodeFactory("t1");
-    cache->add_table("t1", factory, layout);
+    NodeFactory *factory = new FakeNodeFactory(tbn);
+    cache->add_table(tbn, factory, layout, NULL);
 
     for (int i = 0; i < 1000; i++) {
-        Node *node = new FakeNode("t1", i);
+        Node *node = new FakeNode(tbn, i);
         node->set_dirty(true);
-        cache->put("t1", i, node);
+        cache->put(tbn, i, node);
+        node->dec_ref();
     }
 
     // give it time to flush
     cascadb::sleep(5);
     // flush rest and clear nodes
-    cache->del_table("t1");
+    cache->del_table(tbn);
 
-    cache->add_table("t1", factory, layout);
+    cache->add_table(tbn, factory, layout, NULL);
     for (int i = 0; i < 1000; i++) {
-        Node *node = cache->get("t1", i, false);
+        Node *node = cache->get(tbn, i, false);
         EXPECT_TRUE(node != NULL);
         EXPECT_EQ((uint64_t)i, ((FakeNode*)node)->data);
+        node->dec_ref();
     }
-    cache->del_table("t1");
+    cache->del_table(tbn);
 
     delete cache;
     delete factory;
     delete layout;
     delete file;
     delete dir;
+    delete lmgr;
 }

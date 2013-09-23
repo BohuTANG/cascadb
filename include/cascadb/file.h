@@ -20,7 +20,7 @@ public:
     virtual size_t read(Slice buf) = 0;
 
     // skip a number of bytes
-    virtual bool skip(size_t n) = 0;
+    virtual bool seek(size_t n) = 0;
 
     virtual void close() = 0;
 

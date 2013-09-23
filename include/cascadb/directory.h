@@ -29,6 +29,8 @@ public:
 
     virtual void delete_file(const std::string& filename) = 0;
 
+    virtual bool get_files(std::vector<std::string> *files) = 0;
+
     virtual std::string to_string() = 0;
 };
 

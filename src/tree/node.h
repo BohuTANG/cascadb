@@ -13,6 +13,7 @@
 #include "serialize/layout.h"
 #include "msg.h"
 #include "record.h"
+#include "util/atomic.h"
 
 namespace cascadb {
 
@@ -51,8 +52,8 @@ public:
 
 class Node {
 public:
-    Node(const std::string& table_name, bid_t nid)
-    : table_name_(table_name), nid_(nid)
+    Node(uint32_t tbn, bid_t nid)
+    : tbn_(tbn), nid_(nid)
     {
         dirty_ = false;
         dead_ = false;
@@ -83,9 +84,9 @@ public:
         return nid_;
     }
 
-    const std::string& table_name()
+    uint32_t tbn()
     {
-        return table_name_;
+        return tbn_;
     }
 
     void set_dirty(bool dirty)
@@ -145,14 +146,12 @@ public:
     
     void inc_ref()
     {
-        ScopedMutex lock(&mtx_);
-        refcnt_ ++;
+        ATOMIC_ADD(&refcnt_, 1);
     }
     
     void dec_ref()
     {
-        ScopedMutex lock(&mtx_);
-        refcnt_ --;
+        ATOMIC_ADD(&refcnt_, -1);
         assert(refcnt_ >= 0);
         last_used_timestamp_ = now();
     }
@@ -165,14 +164,12 @@ public:
     
     void inc_pin()
     {
-        ScopedMutex lock(&mtx_);
-        pincnt_ ++;
+        ATOMIC_ADD(&pincnt_, 1);
     }
     
     void dec_pin()
     {
-        ScopedMutex lock(&mtx_);
-        pincnt_ --;
+        ATOMIC_ADD(&pincnt_, -1);
         assert(pincnt_ >= 0);
     }
     
@@ -220,7 +217,7 @@ public:
     }
    
 protected:
-    std::string     table_name_;
+    uint32_t        tbn_;
     bid_t           nid_;
 
     // TODO: use atomic
@@ -253,8 +250,8 @@ protected:
 
 class SchemaNode : public Node {
 public:
-    SchemaNode(const std::string& table_name)
-    : Node(table_name, NID_SCHEMA)
+    SchemaNode(uint32_t tbn)
+    : Node(tbn, NID_SCHEMA)
     {
         root_node_id = NID_NIL;
         next_inner_node_id = NID_NIL;
@@ -287,8 +284,8 @@ class InnerNode;
 
 class DataNode : public Node {
 public:
-    DataNode(const std::string& table_name, bid_t nid, Tree *tree)
-    : Node(table_name, nid), tree_(tree), status_(kNew)
+    DataNode(uint32_t tbn, bid_t nid, Tree *tree)
+    : Node(tbn, nid), tree_(tree), status_(kNew)
     {
     }
 
@@ -310,8 +307,8 @@ class LeafNode;
 
 class InnerNode : public DataNode {
 public:
-    InnerNode(const std::string& table_name, bid_t nid, Tree *tree)
-    : DataNode(table_name, nid, tree),
+    InnerNode(uint32_t tbn, bid_t nid, Tree *tree)
+    : DataNode(tbn, nid, tree),
       bottom_(false),
       first_child_(NID_NIL),
       first_msgbuf_(NULL),
@@ -405,14 +402,14 @@ protected:
     
     std::vector<Pivot> pivots_;
 
-    size_t pivots_sz_; 
+    size_t pivots_sz_;
     size_t msgcnt_;
     size_t msgbufsz_;
 };
 
-class LeafNode : public DataNode { 
+class LeafNode : public DataNode {
 public:
-    LeafNode(const std::string& table_name, bid_t nid, Tree *tree);
+    LeafNode(uint32_t tbn, bid_t nid, Tree *tree);
     
     ~LeafNode();
 

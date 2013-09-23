@@ -7,7 +7,6 @@
 #include <set>
 
 #include "util/logger.h"
-#include "util/atomic.h"
 #include "cache.h"
 
 using namespace std;
@@ -36,13 +35,16 @@ public:
     }
 };
 
-Cache::Cache(const Options& options, Status *status)
+Cache::Cache(const Options& options,
+        Status *status,
+        LogMgr *logmgr)
 : options_(options),
   status_(status),
   size_(0),
   alive_(false),
-  evicting_(false),
-  flusher_(NULL)
+  recovering_(false),
+  flusher_(NULL),
+  logmgr_(logmgr)
 {
 }
 
@@ -61,16 +63,16 @@ bool Cache::init()
 
     alive_ = true;
     flusher_ = new Thread(flusher_main);
-    if (flusher_) {
-        flusher_->start(this);
-        return true;
+    if (!flusher_) {
+        LOG_ERROR("cannot create flusher thread");
+        return false;
     }
-    
-    LOG_ERROR("cannot create flusher thread");
-    return false;
+    flusher_->start(this);
+
+    return true;
 }
 
-bool Cache::add_table(const std::string& tbn, NodeFactory *factory, Layout *layout)
+bool Cache::add_table(uint32_t tbn, NodeFactory *factory, Layout *layout, Tree *tree)
 {
     tables_lock_.write_lock();
     if (tables_.find(tbn) != tables_.end()) {
@@ -83,13 +85,14 @@ bool Cache::add_table(const std::string& tbn, NodeFactory *factory, Layout *layo
     tbs.factory = factory;
     tbs.layout = layout;
     tbs.last_checkpoint_time = now();
+    tbs.tree = tree;
 
     tables_[tbn] = tbs;
     tables_lock_.unlock();
     return true;
 }
 
-void Cache::flush_table(const std::string& tbn)
+void Cache::flush_table(uint32_t tbn)
 {
     TableSettings tbs;
     if(!get_table_settings(tbn, tbs)) {
@@ -105,19 +108,26 @@ void Cache::flush_table(const std::string& tbn)
 
     nodes_lock_.write_lock();
     for(map<CacheKey, Node*>::iterator it = nodes_.begin();
-        it != nodes_.end(); it++ ) {
-        if (it->first.tbn  == tbn) {
-            Node *node = it->second;
+            it != nodes_.end();) {
+        map<CacheKey, Node*>::iterator it_tmp = it;
+        it++;
+
+        if (it_tmp->first.tbn  == tbn) {
+            Node *node = it_tmp->second;
             if (node->is_dead()) {
                 zombies.push_back(node);
-                nodes_.erase(it);
+                nodes_.erase(it_tmp);
             } else {
                 size_t sz = node->size();
                 // TODO: flush all node
                 if (node->is_dirty() && !node->is_flushing() && node->pin() == 0) {
-                    node->set_flushing(true);
-                    dirty_nodes.push_back(node);
-                    dirty_size += sz;
+                    if (node->try_write_lock()) {
+                        node->set_flushing(true);
+                        dirty_nodes.push_back(node);
+                        dirty_size += sz;
+                    } else {
+                        // TODO: clone it, since the node is locked by tree
+                    }
                 }
             }
         }
@@ -137,17 +147,26 @@ void Cache::flush_table(const std::string& tbn)
 
     global_lock.unlock();
 
-    layout->flush();
+    // last checkpoint
+    if (!recovering_) {
+        uint64_t last_fsync_lsn = logmgr_->make_checkpoint_begin();
+
+        layout->make_checkpoint(last_fsync_lsn);
+        layout->flush();
+        logmgr_->make_checkpoint_end(last_fsync_lsn);
+        update_last_checkpoint_time(tbn, now());
+        LOG_WARN("make checkpoint at table " << tbn << ", lsn  " << last_fsync_lsn);
+    }
 }
 
-void Cache::del_table(const std::string& tbn, bool flush)
+void Cache::del_table(uint32_t tbn, bool flush)
 {
     if(flush) {
         flush_table(tbn);
     }
 
     tables_lock_.write_lock();
-    map<string, TableSettings>::iterator it = tables_.find(tbn);
+    map<uint32_t, TableSettings>::iterator it = tables_.find(tbn);
     if (it == tables_.end()) {
         tables_lock_.unlock();
         return;
@@ -159,32 +178,32 @@ void Cache::del_table(const std::string& tbn, bool flush)
 
     ScopedMutex global_lock(&global_mtx_);
 
+
     nodes_lock_.write_lock();
+
     // TODO: improve me
     for(map<CacheKey, Node*>::iterator it = nodes_.begin();
-        it != nodes_.end(); it++ ) {
-        if (it->first.tbn  == tbn) {
-            Node *node = it->second;
+            it != nodes_.end();) {
+        map<CacheKey, Node*>::iterator it_tmp = it;
+        it++;
+        if (it_tmp->first.tbn  == tbn) {
+            Node *node = it_tmp->second;
             assert(node->ref() == 0);
             delete node;
             
-            nodes_.erase(it);
+            nodes_.erase(it_tmp);
             total_count ++;
         }
     }
     nodes_lock_.unlock();
-
     global_lock.unlock();
 
     LOG_INFO("release " << total_count << " nodes in table " << tbn);
 }
 
-void Cache::put(const std::string& tbn, bid_t nid, Node* node)
+void Cache::put(uint32_t tbn, bid_t nid, Node* node)
 {
-    //assert(node->ref() == 0);
-
-    // status
-    ATOMIC_ADD(&status_->status_cache_put_num, 1);
+    assert(node->ref() == 0);
 
     CacheKey key(tbn, nid);
     TableSettings tbs;
@@ -193,22 +212,24 @@ void Cache::put(const std::string& tbn, bid_t nid, Node* node)
     }
 
     if (must_evict()) {
-        if (!evicting_)
+        while (true) {
             evict();
+            if (!must_evict()) {
+                break;
+            }
+            usleep(1000); // give up 1 millisecond
+        }
     }
 
     nodes_lock_.write_lock();
     assert(nodes_.find(key) == nodes_.end());
     nodes_[key] = node;
-    //node->inc_ref();
+    node->inc_ref();
     nodes_lock_.unlock();
 }
 
-Node* Cache::get(const std::string& tbn, bid_t nid, bool skeleton_only)
+Node* Cache::get(uint32_t tbn, bid_t nid, bool skeleton_only)
 {
-    // status
-    ATOMIC_ADD(&status_->status_cache_get_num, 1);
-
     CacheKey key(tbn, nid);
     Node *node;
 
@@ -221,17 +242,22 @@ Node* Cache::get(const std::string& tbn, bid_t nid, bool skeleton_only)
     map<CacheKey, Node*>::iterator it = nodes_.find(key);
     if (it != nodes_.end()) {
         node = it->second;
-        //node->inc_ref();
+        node->inc_ref();
         nodes_lock_.unlock();
         return node;
     }
     nodes_lock_.unlock();
 
     if (must_evict()) {
-        if (!evicting_)
+        while (true) {
             evict();
+            if (!must_evict()) {
+                break;
+            }
+            usleep(1000); // give up 1 millisecond
+        }
     }
-
+    
     Block* block = tbs.layout->read(nid, skeleton_only);
     if (block == NULL) return NULL;
     
@@ -251,16 +277,16 @@ Node* Cache::get(const std::string& tbn, bid_t nid, bool skeleton_only)
     } else {
         nodes_[key] = node;
     }
-    //node->inc_ref();
+    node->inc_ref();
     nodes_lock_.unlock();
 
     return node;
 }
 
-bool Cache::get_table_settings(const std::string& tbn, TableSettings& tbs)
+bool Cache::get_table_settings(uint32_t tbn, TableSettings& tbs)
 {
     tables_lock_.read_lock();
-    map<string, TableSettings>::iterator it = tables_.find(tbn);
+    map<uint32_t, TableSettings>::iterator it = tables_.find(tbn);
     if (it != tables_.end()) {
         tbs = it->second;
         tables_lock_.unlock();
@@ -270,10 +296,10 @@ bool Cache::get_table_settings(const std::string& tbn, TableSettings& tbs)
     return false;
 }
 
-void Cache::update_last_checkpoint_time(const std::string& tbn, Time t)
+void Cache::update_last_checkpoint_time(uint32_t tbn, Time t)
 {
     tables_lock_.write_lock();
-    map<string, TableSettings>::iterator it = tables_.find(tbn);
+    map<uint32_t, TableSettings>::iterator it = tables_.find(tbn);
     if (it != tables_.end()) {
         it->second.last_checkpoint_time = t;
     }
@@ -318,21 +344,19 @@ void Cache::evict()
     vector<Node*> clean_nodes;
 
     nodes_lock_.write_lock();
-    evicting_ = true;
-
-    // status
-    ATOMIC_ADD(&status_->status_cache_evict_num, 1);
 
     for(map<CacheKey, Node*>::iterator it = nodes_.begin();
-        it != nodes_.end(); it++ ) {
+            it != nodes_.end();) {
+        map<CacheKey, Node*>::iterator it_tmp = it;
+        it++;
 
-        Node *node = it->second;
-        assert(node->nid() == it->first.nid);
+        Node *node = it_tmp->second;
+        assert(node->nid() == it_tmp->first.nid);
 
         if (node->is_dead()) {
             if (node->ref() == 0) {
                 zombies.push_back(node);
-                nodes_.erase(it);
+                nodes_.erase(it_tmp);
             }
         } else {
             size_t size = node->size();
@@ -357,7 +381,8 @@ void Cache::evict()
 
             // check everything again after ensure reference is 0
             if (node->ref() == 0 && !node->is_dead() 
-                    && !node->is_dirty() && !node->is_flushing()) {
+                    && !node->is_dirty() && !node->is_flushing()
+                    && node->pin() == 0) {
                 clean_size += size;
                 clean_count ++;
                 clean_nodes.push_back(node);
@@ -388,7 +413,7 @@ void Cache::evict()
         assert(node->ref() == 0 && !node->is_dirty() && !node->is_flushing());
 
         // one and only one node is erased
-        if (nodes_.erase(CacheKey(node->table_name(), node->nid())) != 1) {
+        if (nodes_.erase(CacheKey(node->tbn(), node->nid())) != 1) {
             assert(false);
         }
 
@@ -403,7 +428,6 @@ void Cache::evict()
     size_ -= evicted_size;
     size_lock.unlock();
 
-    evicting_ = false;
     nodes_lock_.unlock();
 
     // clear zombies
@@ -496,14 +520,16 @@ void Cache::write_back()
 
             Node *node = expired_nodes[i];
 
-            if (node->try_read_lock()) {
+            // set write lock on node
+            if (node->try_write_lock()) {
                 // check again
                 if (node->pin() == 0 && !node->is_dead()) {
                     node->set_flushing(true);
                     flushed_nodes.push_back(node);
                     flushed_size += node->size();
-                } 
-                node->read_unlock();
+                } else {
+                    node->write_unlock();
+                }
             }
         }
 
@@ -532,14 +558,16 @@ void Cache::write_back()
 
                 Node *node = candidates[i];
 
-                if (node->try_read_lock()) {
+                // set write lock on node
+                if (node->try_write_lock()) {
                     // check again
                     if (node->pin() == 0 && !node->is_dead()) {
                         node->set_flushing(true);
                         flushed_nodes.push_back(node);
                         flushed_size += node->size();
+                    } else {
+                        node->write_unlock();
                     }
-                    node->read_unlock();
                 }
             }
         }
@@ -547,6 +575,7 @@ void Cache::write_back()
         // flush
         if (flushed_nodes.size()) {
             flush_nodes(flushed_nodes);
+            check_checkpoint();
         }
 
 #ifdef DEBUG_CACHE        
@@ -569,21 +598,16 @@ void Cache::write_back()
 
 void Cache::flush_nodes(vector<Node*>& nodes)
 {
-    // status
-    ATOMIC_ADD(&status_->status_cache_writeback_num, 1);
-
     LOG_TRACE("flush " << nodes.size() << " nodes");
-    set<string> tables;
 
     for (size_t i = 0 ; i < nodes.size(); i++) {
         Node* node = nodes[i];
-
-        // lock node
-        node->write_lock();
         bid_t nid = node->nid();
 
+        // TODO: test node is write locked
+
         TableSettings tbs;
-        if (!get_table_settings(node->table_name(), tbs)) {
+        if (!get_table_settings(node->tbn(), tbs)) {
             assert(false);
         }
         Layout *layout = tbs.layout;
@@ -611,24 +635,6 @@ void Cache::flush_nodes(vector<Node*>& nodes)
         context->block = block;
         Callback *cb = new Callback(this, &Cache::write_complete, context);
         layout->async_write(nid, block, skeleton_size, cb);
-
-        tables.insert(node->table_name());
-    }
-
-    Time current = now();
-    for (set<string>::iterator it = tables.begin(); it != tables.end(); it++) {
-        TableSettings tbs;
-        if (!get_table_settings(*it, tbs)) {
-            assert(false);
-        }
-
-        // 1 minute
-        if (interval_us(tbs.last_checkpoint_time, current) >= 60 * 1000000) {
-            LOG_INFO("make checkpoint at table " << *it);
-            tbs.layout->flush_meta();
-            tbs.layout->truncate();
-            update_last_checkpoint_time(*it, current);
-        }
     }
 }
 
@@ -642,9 +648,9 @@ void Cache::write_complete(WriteCompleteContext* context, bool succ)
     assert(block);
 
     if (succ) {
-        LOG_TRACE("write node table " << node->table_name() << ", nid " << node->nid() << " ok" );
+        LOG_TRACE("write node table " << node->tbn() << ", nid " << node->nid() << " ok" );
     } else {
-        LOG_ERROR("write node table " << node->table_name() << ", nid " << node->nid() << " error");
+        LOG_ERROR("write node table " << node->tbn() << ", nid " << node->nid() << " error");
         // TODO: handle the error
     }
 
@@ -663,7 +669,7 @@ void Cache::delete_nodes(vector<Node*>& nodes)
 
         // TODO: check node is stored to layout
         TableSettings tbs;
-        if (!get_table_settings(node->table_name(), tbs)) {
+        if (!get_table_settings(node->tbn(), tbs)) {
             assert(false);
         }
 
@@ -735,4 +741,17 @@ void Cache::debug_print(std::ostream& out)
         << clean_count << " clean nodes ("
         << clean_size << " bytes), "
         << endl;
+}
+
+void Cache::check_checkpoint()
+{
+    if (!recovering_) {
+        for (std::map<uint32_t, TableSettings>::iterator it = tables_.begin(); it != tables_.end(); it++) {
+            Time current = now();
+            if (interval_us(it->second.last_checkpoint_time, current) >=
+                    options_.checkpoint_period_ms * 1000) {
+                flush_table(it->first);
+            }
+        }
+    }
 }

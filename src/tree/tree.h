@@ -39,12 +39,12 @@ namespace cascadb {
 
 class Tree {
 public:
-    Tree(const std::string& table_name,
+    Tree(uint32_t tbn,
          const Options& options,
          Status *status,
          Cache *cache,
          Layout *layout)
-    : table_name_(table_name),
+    : tbn_(tbn),
       options_(options),
       status_(status),
       cache_(cache),
@@ -60,11 +60,11 @@ public:
     
     bool init();
     
-    bool put(Slice key, Slice value);
+    bool put(const Slice& key, const Slice& value);
     
-    bool del(Slice key);
+    bool del(const Slice& key);
 
-    bool get(Slice key, Slice& value);
+    bool get(const Slice& key, Slice& value);
 
     InnerNode* root() { return root_; }
 
@@ -90,7 +90,7 @@ private:
         Tree        *tree_;
     };
 
-    std::string     table_name_;
+    uint32_t tbn_;
 
     Options         options_;
 

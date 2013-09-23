@@ -137,7 +137,7 @@ public:
         return res;
     }
 
-    bool skip(size_t n)
+    bool seek(size_t n)
     {
         assert(file_);
         offset_ += n;
@@ -356,6 +356,11 @@ std::string RAMDirectory::to_string()
     string buf;
     buf += "RAMDirectory";
     return buf;
+}
+
+bool RAMDirectory::get_files(std::vector<std::string> *files)
+{
+    return false;
 }
 
 Directory* cascadb::create_ram_directory()

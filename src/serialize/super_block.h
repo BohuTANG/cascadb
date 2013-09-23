@@ -18,20 +18,20 @@ class SuperBlock {
 public:
     SuperBlock()
     {
-        magic_number0 = SUPER_BLOCK_MAGIC_NUM;   // "cascadb
-        major_version = 0;                  // "version 0.1"
+        magic_number = SUPER_BLOCK_MAGIC_NUM;   // "cascadb
+        major_version = 0;                      // "version 0.1"
         minor_version = 1;
+        lsn = 0UL;
 
         index_block_meta = NULL;
-        magic_number1 = SUPER_BLOCK_MAGIC_NUM;    // "cascadb"
     }
 
-    uint64_t        magic_number0;
+    uint64_t        magic_number;
     uint8_t         major_version;
     uint8_t         minor_version;
+    uint64_t        lsn;                        // checkpoint lsn
 
     BlockMeta       *index_block_meta;
-    uint64_t        magic_number1;
 };
 
 }

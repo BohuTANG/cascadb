@@ -541,9 +541,10 @@ bool Layout::flush_index()
 
 bool Layout::read_superblock(BlockReader& reader)
 {
-    if (!reader.readUInt64(&(superblock_->magic_number0))) return false;
+    if (!reader.readUInt64(&(superblock_->magic_number))) return false;
     if (!reader.readUInt8(&(superblock_->major_version))) return false;
     if (!reader.readUInt8(&(superblock_->minor_version))) return false;
+    if (!reader.readUInt64(&(superblock_->lsn))) return false;
 
     bool has_index_block_meta;
     if (!reader.readBool(&has_index_block_meta)) return false;
@@ -552,15 +553,15 @@ bool Layout::read_superblock(BlockReader& reader)
         if (!read_block_meta(superblock_->index_block_meta, reader)) return false;
     }
 
-    uint32_t expected_crc, actual_crc;
+    uint32_t exp_xsum, act_xsum;
     uint32_t super_size = reader.pos();
 
-    if (!reader.readUInt32(&expected_crc)) return false;
-    actual_crc= crc32(reader.start(), super_size); 
-    if (actual_crc != expected_crc) {
+    if (!reader.readUInt32(&exp_xsum)) return false;
+    act_xsum = crc32(reader.start(), super_size);
+    if (act_xsum != exp_xsum) {
         LOG_ERROR("superblock crc  error"
-                << ", expected_crc " << expected_crc
-                << ", actual_crc " << actual_crc
+                << ", exp_xsum " << exp_xsum
+                << ", act_xsum " << act_xsum
                 << ", length " << super_size);
 
         return false;
@@ -571,9 +572,10 @@ bool Layout::read_superblock(BlockReader& reader)
 
 bool Layout::write_superblock(BlockWriter& writer)
 {
-    if (!writer.writeUInt64(superblock_->magic_number0)) return false;
+    if (!writer.writeUInt64(superblock_->magic_number)) return false;
     if (!writer.writeUInt8(superblock_->major_version)) return false;
     if (!writer.writeUInt8(superblock_->minor_version)) return false;
+    if (!writer.writeUInt64(superblock_->lsn)) return false;
 
     if (superblock_->index_block_meta) {
         if (!writer.writeBool(true)) return false;
@@ -977,6 +979,7 @@ Slice Layout::alloc_aligned_buffer(size_t size)
     if (posix_memalign(&buf, PAGE_SIZE, rounded_size)) {
         assert(false);
     }
+    memset(buf, 0, rounded_size);
 
     if (buf) {
         assert( ((size_t)buf & (PAGE_SIZE-1)) == 0);

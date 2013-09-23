@@ -7,9 +7,10 @@
 
 #include "cascadb/options.h"
 #include "cascadb/status.h"
-#include "tree/node.h"
 #include "serialize/block.h"
 #include "serialize/layout.h"
+#include "log/log_mgr.h"
+#include "tree/node.h"
 #include "sys/sys.h"
 
 #include <map>
@@ -31,54 +32,67 @@ public:
 // Nodes're evicted in LRU order.
 // Cache can be shared among multiple tables.
 
+struct TableSettings {
+    NodeFactory     *factory;
+    Layout          *layout;
+    Tree            *tree;
+    Time            last_checkpoint_time;
+};
+
 class Cache {
 public:
-    Cache(const Options& options, Status *status);
+    Cache(const Options& options,
+            Status *status,
+            LogMgr *logmgr);
     
     ~Cache();
     
     bool init();
     
     // Add a table to cache
-    bool add_table(const std::string& tbn, NodeFactory *factory, Layout *layout);
+    bool add_table(uint32_t tbn, NodeFactory *factory, Layout *layout, Tree *tree);
+
+    // Get tablesetting from cache
+    bool get_table_settings(uint32_t tbn, TableSettings& tbs);
     
     // Flush all dirty nodes in a table
-    void flush_table(const std::string& tbn);
+    void flush_table(uint32_t tbn);
 
     // Delete a table from cache, all loaded nodes in the table're
     // destroied, dirty nodes're flushed by default
-    void del_table(const std::string& tbn, bool flush = true);
+    void del_table(uint32_t tbn, bool flush = true);
     
     // Put newly created node into cache
-    void put(const std::string& tbn, bid_t nid, Node* node);
+    void put(uint32_t tbn, bid_t nid, Node* node);
     
     // Acquire node, if node doesn't exist in cache, load it from layout
-    Node* get(const std::string& tbn, bid_t nid, bool skeleton_only);
+    Node* get(uint32_t tbn, bid_t nid, bool skeleton_only);
     
     // Write back dirty nodes if any condition satisfied,
     // Sweep out dead nodes
     void write_back();
 
+    void set_in_recovering() { recovering_ = true; }
+    void set_out_recovering() { recovering_ = false; }
+
     void debug_print(std::ostream& out);
 
-protected:
-    struct TableSettings {
-        NodeFactory     *factory;
-        Layout          *layout;
-        Time            last_checkpoint_time;
-    };
-
-    bool get_table_settings(const std::string& tbn, TableSettings& tbs);
-
-    void update_last_checkpoint_time(const std::string& tbn, Time t);
-
+    // check the cache highwater is reached
     bool must_evict();
+
+    // Evict least recently used clean nodes to make room
+    void evict();
+
+    // Maybe should do checkpoint
+    void check_checkpoint();
+
+protected:
+    void update_last_checkpoint_time(uint32_t tbn, Time t);
+
 
     // Test whether the cache grows larger than high watermark
     bool need_evict();
 
-    // Evict least recently used clean nodes to make room
-    void evict();
 
     void flush_nodes(std::vector<Node*>& nodes);
 
@@ -97,26 +111,26 @@ private:
     Status *status_;
 
     RWLock tables_lock_;
-    std::map<std::string, TableSettings> tables_;
+    std::map<uint32_t, TableSettings> tables_;
 
     // TODO make me atomic
     Mutex size_mtx_;
     // total memory size occupied by nodes,
     // updated everytime the flusher thread runs
-    size_t size_;   
+    size_t size_;
 
     class CacheKey {
     public:
-        CacheKey(const std::string& t, bid_t n): tbn(t), nid(n) {}
+        CacheKey(uint32_t t, bid_t n): tbn(t), nid(n) {}
 
         bool operator<(const CacheKey& o) const {
-            int c = tbn.compare(o.tbn);
+            int c = tbn < o.tbn;
             if (c < 0) { return true; }
             else if (c > 0) { return false; }
             else { return nid < o.nid; }
         }
         
-        std::string tbn;
+        uint32_t tbn;
         bid_t nid;
     };
 
@@ -129,11 +143,14 @@ private:
     
     bool alive_;
 
-    // cache is evciting flag
-    bool evicting_;
+    // db in recover flag
+    bool recovering_;
+
     // scan nodes not being used,
     // async flush dirty page out
     Thread* flusher_;
+
+    LogMgr *logmgr_;
 };
 
 }

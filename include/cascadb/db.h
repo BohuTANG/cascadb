@@ -20,13 +20,13 @@ public:
 
     static DB* open(const std::string& name, const Options& options);
 
-    virtual bool put(Slice key, Slice value) = 0;
+    virtual bool put(const Slice& key, const Slice& value) = 0;
 
-    virtual bool del(Slice key) = 0;
+    virtual bool del(const Slice& key) = 0;
 
-    virtual bool get(Slice key, Slice& value) = 0;
+    virtual bool get(const Slice& key, Slice& value) = 0;
 
-    inline bool get(Slice key, std::string& value)
+    inline bool get(const Slice& key, std::string& value)
     {
         Slice v;
         if (!get(key, v)) {

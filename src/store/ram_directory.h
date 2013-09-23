@@ -91,6 +91,8 @@ public:
 
     std::string to_string();
 
+    bool get_files(std::vector<std::string> *files);
+
 protected:
     // create if RAMFile not exist and the create flag is set
     RAMFile* open_ramfile(const std::string& filename, bool create = false);

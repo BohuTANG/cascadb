@@ -5,6 +5,7 @@
 #include "util/logger.h"
 #include "store/ram_directory.h"
 #include "sys/linux/linux_fs_directory.h"
+#include "log/log_recover.h"
 #include "db_impl.h"
 
 using namespace std;
@@ -18,6 +19,9 @@ DBImpl::~DBImpl()
     delete cache_;
     delete layout_;
     delete file_;
+
+    if (lmgr_)
+        delete lmgr_;
 }
 
 bool DBImpl::init()
@@ -39,6 +43,7 @@ bool DBImpl::init()
     }
     LOG_INFO("init db , data file length " << length << ", create " << create);
 
+    // file
     file_ = dir->open_aio_file(filename);
     layout_ = new Layout(file_, length, options_, &status_);
     if (!layout_->init(create)) {
@@ -46,39 +51,61 @@ bool DBImpl::init()
         return false;
     }
 
-    cache_ = new Cache(options_, &status_);
+    // log
+    lmgr_ = new LogMgr(options_);
+    if (!lmgr_->init()) {
+        LOG_ERROR("lmgr init error");
+        return false;
+    }
+
+
+    // cache
+    cache_ = new Cache(options_, &status_, lmgr_);
     if (!cache_->init()) {
         LOG_ERROR("init cache error");
         return false;
     }
 
-    tree_ = new Tree(name_, options_, &status_, cache_, layout_);
+    // tree
+    tree_ = new Tree(tbn_, options_, &status_, cache_, layout_);
     if (!tree_->init()) {
         LOG_ERROR("tree init error");
         return false;
     }
 
+    // recovery
+    cache_->set_in_recovering();
+    LogRecover *recvr = new LogRecover(options_, cache_);
+    if (!recvr->recover(layout_->checkpoint_lsn())) {
+        LOG_ERROR("log recover error");
+        return false;
+    }
+    delete recvr;
+    cache_->set_out_recovering();
+
     return true;
 }
 
-bool DBImpl::put(Slice key, Slice value)
+bool DBImpl::put(const Slice& key, const Slice& value)
 {
+    lmgr_->enq_put(key, value, tbn_, false);
     return tree_->put(key, value);
 }
 
-bool DBImpl::del(Slice key)
+bool DBImpl::del(const Slice& key)
 {
+    lmgr_->enq_del(key, tbn_, false);
     return tree_->del(key);
 }
 
-bool DBImpl::get(Slice key, Slice& value)
+bool DBImpl::get(const Slice& key, Slice& value)
 {
     return tree_->get(key, value);
 }
 
 void DBImpl::flush()
 {
-    cache_->flush_table(name_);
+    cache_->flush_table(tbn_);
 }
 
 void DBImpl::debug_print(std::ostream& out)

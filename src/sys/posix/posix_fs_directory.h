@@ -27,6 +27,8 @@ public:
 
     virtual size_t file_length(const std::string& filename);
 
+    virtual bool get_files(std::vector<std::string>* files);
+
 protected:
     virtual const std::string fullpath(const std::string& filename);
 };

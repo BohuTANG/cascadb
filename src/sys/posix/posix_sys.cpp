@@ -235,6 +235,132 @@ void CondVar::notify_all() {
     pthread_call("notify all", pthread_cond_broadcast(&cv_));
 }
 
+/**************************************
+ *   cron
+ *************************************/
+
+Cron::~Cron()
+{
+    if (alive_)
+        shutdown();
+
+    if (thread_) {
+        delete thread_;
+    }
+}
+
+static void cron_gettime(struct timespec *a)
+{
+    struct timeval tv;
+    gettimeofday(&tv, 0);
+    a->tv_sec = tv.tv_sec;
+    a->tv_nsec = tv.tv_usec * 1000LL;
+}
+
+static void *do_cron(void *arg)
+{
+    Cron *cron = (Cron*) arg;
+
+    pthread_mutex_lock(&cron->PMTX);
+    while (1) {
+        if (!cron->alive()) {
+            pthread_mutex_unlock(&cron->PMTX);
+            return 0;
+        }
+
+        if (cron->period_ms() == 0) {
+            pthread_cond_wait(&cron->PCOND, &cron->PMTX);
+        }
+        else {
+            unsigned int p_ms = cron->period_ms();
+            struct timespec timeout = cron->last_call_time_;
+
+            timeout.tv_nsec += (p_ms * 1000000);
+            timeout.tv_sec += (timeout.tv_nsec / 1000000000);
+            timeout.tv_nsec = (timeout.tv_nsec % 1000000000);
+
+            int r = pthread_cond_timedwait(&cron->PCOND, &cron->PMTX, &timeout);
+            if (r == 0 || r == ETIMEDOUT) {
+                // do job
+                if (cron->alive()) {
+                    pthread_mutex_unlock(&cron->PMTX);
+                    cron->f()(cron->arg());
+                    cron_gettime(&cron->last_call_time_);
+                    pthread_mutex_lock(&cron->PMTX);
+                }
+            } else {
+                LOG_ERROR(" do cron error, " << strerror(r));
+            }
+        }
+
+        if (!cron->alive()) {
+            pthread_mutex_unlock(&cron->PMTX);
+            return 0;
+        }
+    }
+
+    return NULL;
+}
+
+bool Cron::init(func f, void *arg, uint32_t period_ms)
+{
+    init_ = true;
+
+    pthread_cond_init(&PCOND, NULL);
+    pthread_mutex_init(&PMTX, NULL);
+
+    f_ = f;
+    arg_ = arg;
+    period_ms_ = period_ms;
+    cron_gettime(&last_call_time_);
+
+    thread_ = new Thread(do_cron);
+    if (thread_)
+        return true;
+
+    return false;
+}
+
+void Cron::start()
+{
+    if (alive_ || !init_)
+        return;
+
+    alive_ = true;
+    if (thread_) {
+        thread_->start(this);
+    }
+}
+
+void Cron::shutdown()
+{
+    if (!alive_) return;
+
+    pthread_mutex_lock(&PMTX);
+    alive_ = false;
+    pthread_cond_signal(&PCOND);
+    pthread_mutex_unlock(&PMTX);
+
+    thread_->join();
+    pthread_cond_destroy(&PCOND);
+    pthread_mutex_destroy(&PMTX);
+}
+
+bool Cron::change_period(unsigned int period_ms)
+{
+    pthread_mutex_lock(&PMTX);
+    period_ms_ = period_ms;
+    // to wake up
+    pthread_cond_signal(&PCOND);
+    pthread_mutex_unlock(&PMTX);
+
+    return true;
+}
+
+/**************************************
+ *   cron end
+ *************************************/
+
 bool operator<(const Time& t1, const Time& t2)
 {
     int c = t1.tv_sec - t2.tv_sec;
