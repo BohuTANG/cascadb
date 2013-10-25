@@ -68,9 +68,9 @@ MESSAGE(STATUS "Installation path is: ${CMAKE_INSTALL_PREFIX}   (overwrite with 
 
 install(DIRECTORY include/cascadb DESTINATION include)
 
+add_subdirectory(thirdparty)
 add_subdirectory(src)
 add_subdirectory(bench)
-add_subdirectory(thirdparty)
 
 enable_testing()
 add_subdirectory(test)

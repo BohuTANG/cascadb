@@ -588,6 +588,9 @@ void Cache::write_back()
             << "Flush " << flushed_nodes.size() << " nodes ("
             << flushed_size << " bytes)");
 #endif
+
+        flushed_nodes.clear();
+
         if (need_evict()) {
             evict();
         } else {

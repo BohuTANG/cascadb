@@ -687,7 +687,7 @@ int main(int argc, char** argv)
                 FLAGS_method = kQuicklzCompress;
             else if (strcmp(argv[i] + strlen("--rowformat="), "no") == 0)
                 FLAGS_method = kNoCompress;
-        } else if(strncmp(argv[i], "--logopen=", 1) == 0) {
+        } else if(strncmp(argv[i], "--logopen=", 10) == 0) {
             if (strcmp(argv[i] + strlen("--logopen="), "Y") == 0)
                 FLAGS_logopen = true;
         } else {
