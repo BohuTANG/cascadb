@@ -50,6 +50,12 @@ public:
     uint32_t    crc;
 };
 
+enum LockType {
+    L_READ,               // read lock
+    L_WRITE_CHEAP,        // node write lock(msgbuf writable)
+    L_WRITE_EXPENSIVE     // node and msgbuf write lock
+};
+
 class Node {
 public:
     Node(uint32_t tbn, bid_t nid)
@@ -60,7 +66,6 @@ public:
         flushing_ = false;
         
         refcnt_ = 0;
-        pincnt_ = 0;
     }
     
     virtual ~Node() {}
@@ -161,61 +166,70 @@ public:
         ScopedMutex lock(&mtx_);
         return refcnt_;
     }
-    
-    void inc_pin()
-    {
-        ATOMIC_ADD(&pincnt_, 1);
-    }
-    
-    void dec_pin()
-    {
-        ATOMIC_ADD(&pincnt_, -1);
-        assert(pincnt_ >= 0);
-    }
-    
-    int pin()
-    {
-        ScopedMutex lock(&mtx_);
-        return pincnt_;
-    }
-    
+       
     // Read lock is locked when:
     // 1) inner node is being written or read
     // 2) leaf node is being read
-    void read_lock()
-    {
-        lock_.read_lock();
-    }
-
-    void read_unlock()
-    {
-        lock_.unlock();
-    }
-
-    bool try_read_lock()
-    {
-        return lock_.try_read_lock();
-    }
 
     // Write lock is locked when:
     // 1) inner node is spliting or merging
     // 2) leaf node is being written
     // 3) node is flushed out
-    void write_lock()
+
+    bool try_pin(LockType locktype)
     {
-        lock_.write_lock();
+        bool ret = false;
+        switch (locktype) {
+        case L_READ:
+            ret = lock_.try_read_lock();
+            break;
+        case L_WRITE_CHEAP:
+            ret = lock_.try_write_lock();
+            break;
+        case L_WRITE_EXPENSIVE:
+            ret = lock_.try_write_lock();
+            break;
+        default:
+            assert(0);
+        }
+
+        return ret;
     }
 
-    void write_unlock()
+    void pin(LockType locktype)
+    {
+        switch (locktype) {
+        case L_READ:
+            lock_.read_lock();
+            break;
+        case L_WRITE_CHEAP:
+            lock_.write_lock();
+            break;
+        case L_WRITE_EXPENSIVE:
+            lock_.write_lock();
+            break;
+        default:
+            assert(0);
+        }
+    }
+
+    void unpin()
     {
         lock_.unlock();
     }
 
-    bool try_write_lock()
+    void rlock_rise_to_wlock()
     {
-        return lock_.try_write_lock();
+        lock_.unlock();
+        lock_.write_lock();
     }
-   
+
+    void wlock_down_to_rlock()
+    {
+        lock_.unlock();
+        lock_.read_lock();
+    }
+
 protected:
     uint32_t        tbn_;
     bid_t           nid_;
@@ -239,10 +253,6 @@ protected:
     // reference counting, node can be destructed only
     // when this count reaches 0
     int             refcnt_;
-
-    // the number of times a node has been pinned, 
-    // a node should not be flushed out when pinned
-    int             pincnt_;
 
     // latch
     RWLock          lock_;
@@ -280,6 +290,12 @@ enum NodeStatus {
     kFullLoaded
 };
 
+enum Reactivity {
+    STABLE,             // node is stable
+    FUSIBLE,            // node pivots size is 0
+    FISSIBLE            // node fanout is too big
+};
+
 class InnerNode;
 
 class DataNode : public Node {
@@ -291,12 +307,15 @@ public:
 
     virtual ~DataNode() {};
 
+    // get the node's reactivity
+    virtual Reactivity get_reactivity() = 0;
+
     // Merge messages cascading from parent
     virtual bool cascade(MsgBuf *mb, InnerNode* parent) = 0;
 
     // Find values buffered in this node and all descendants
     virtual bool find(Slice key, Slice& value, InnerNode* parent) = 0;
-
+  
 protected:
     Tree            *tree_;
 
@@ -337,12 +356,15 @@ public:
         return write(Msg(Del, key.clone()));
     }
 
+    // get the node's reactivity
+    virtual Reactivity get_reactivity();
+
     virtual bool cascade(MsgBuf *mb, InnerNode* parent);
     
     virtual bool find(Slice key, Slice& value, InnerNode* parent);
-    
+
     void add_pivot(Slice key, bid_t nid);
-    
+
     void rm_pivot(bid_t bid);
 
     size_t pivot_size(Slice key);
@@ -365,6 +387,7 @@ protected:
     
     MsgBuf* msgbuf(int idx);
     MsgBuf* msgbuf(int idx, Slice& key);
+    void bloomfilter_clear(int idx);
 
     bid_t child(int idx);
     void set_child(int idx, bid_t c);
@@ -405,6 +428,8 @@ protected:
     size_t pivots_sz_;
     size_t msgcnt_;
     size_t msgbufsz_;
+
+    Mutex pinmtx_;
 };
 
 class LeafNode : public DataNode {
@@ -413,10 +438,13 @@ public:
     
     ~LeafNode();
 
+    // get the node's reactivity
+    virtual Reactivity get_reactivity();
+
     virtual bool cascade(MsgBuf *mb, InnerNode* parent);
     
     virtual bool find(Slice key, Slice& value, InnerNode* parent);
-    
+
     size_t size();
     
     size_t estimated_buffer_size();
@@ -473,9 +501,8 @@ private:
 
     RecordBuckets           records_;
 
+    Mutex pinmtx_;
 };
-
-
 
 }
 

@@ -26,6 +26,10 @@ Tree::~Tree()
     delete node_factory_;
 
     delete compressor_;
+
+    LOG_WARN(" new innernode nums " << status_->status_innernode_created_num
+            << " , new leafnode nums " << status_->status_leaf_created_num
+            );
 }
 
 bool Tree::init()
@@ -62,10 +66,10 @@ bool Tree::init()
         root_->init_empty_root();
 
 
-        schema_->write_lock();
+        schema_->pin(L_WRITE_CHEAP);
         schema_->root_node_id = root_->nid();
         schema_->set_dirty(true);
-        schema_->write_unlock();
+        schema_->unpin();
     } else {
         root_ = (InnerNode*)load_node(schema_->root_node_id, false);
     }

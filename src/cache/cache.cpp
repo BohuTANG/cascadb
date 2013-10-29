@@ -55,6 +55,12 @@ Cache::~Cache()
         flusher_->join();
         delete flusher_;
     }
+
+    LOG_WARN(" cache hits: " << status_->status_node_load_from_mem_num
+            << " , cache miss: " << status_->status_node_load_from_disk_num
+            << " (cost " << status_->status_node_load_from_disk_us / 1000 << "ms)"
+            << " , evicts: " << status_->status_cache_evict_num
+            );
 }
 
 bool Cache::init()
@@ -120,8 +126,8 @@ void Cache::flush_table(uint32_t tbn)
             } else {
                 size_t sz = node->size();
                 // TODO: flush all node
-                if (node->is_dirty() && !node->is_flushing() && node->pin() == 0) {
-                    if (node->try_write_lock()) {
+                if (node->is_dirty() && !node->is_flushing()) {
+                    if (node->try_pin(L_WRITE_CHEAP)) {
                         node->set_flushing(true);
                         dirty_nodes.push_back(node);
                         dirty_size += sz;
@@ -211,13 +217,18 @@ void Cache::put(uint32_t tbn, bid_t nid, Node* node)
         assert(false);
     }
 
+    // add trycnt to avoid dead block
+    // since the cache_limit is small(<50MB)
+    // it maybe dead block for 10 seconds
+    uint64_t trycnt = 0UL;
     if (must_evict()) {
         while (true) {
             evict();
-            if (!must_evict()) {
+            if (!must_evict() || (trycnt > 10000)) {
                 break;
             }
             usleep(1000); // give up 1 millisecond
+            trycnt++;
         }
     }
 
@@ -244,22 +255,32 @@ Node* Cache::get(uint32_t tbn, bid_t nid, bool skeleton_only)
         node = it->second;
         node->inc_ref();
         nodes_lock_.unlock();
+
+        status_->status_node_load_from_mem_num++;
         return node;
     }
     nodes_lock_.unlock();
 
+    uint64_t trycnt = 0UL;
     if (must_evict()) {
         while (true) {
             evict();
-            if (!must_evict()) {
+            if (!must_evict() || (trycnt > 10000)) {
                 break;
             }
             usleep(1000); // give up 1 millisecond
+            trycnt++;
         }
     }
     
+    uint64_t start = now_micros();
+    status_->status_node_load_from_disk_num++;
     Block* block = tbs.layout->read(nid, skeleton_only);
+    uint64_t end = now_micros();
+
     if (block == NULL) return NULL;
+
+    status_->status_node_load_from_disk_us += (end - start);
     
     node = tbs.factory->new_node(nid);
     BlockReader reader(block);
@@ -380,9 +401,8 @@ void Cache::evict()
             }
 
             // check everything again after ensure reference is 0
-            if (node->ref() == 0 && !node->is_dead() 
-                    && !node->is_dirty() && !node->is_flushing()
-                    && node->pin() == 0) {
+            if (node->ref() == 0 && !node->is_dead()
+                    && !node->is_dirty() && !node->is_flushing()) {
                 clean_size += size;
                 clean_count ++;
                 clean_nodes.push_back(node);
@@ -495,7 +515,7 @@ void Cache::write_back()
                         current) > options_.cache_dirty_expire * 1000;
 
                     // do not write node until last write is completed
-                    if ( expired && !node->is_flushing() && node->pin() == 0) {
+                    if ( expired && !node->is_flushing()) {
                         expired_nodes.push_back(node);
                         expired_size += sz;
                     }
@@ -521,14 +541,14 @@ void Cache::write_back()
             Node *node = expired_nodes[i];
 
             // set write lock on node
-            if (node->try_write_lock()) {
+            if (node->try_pin(L_WRITE_CHEAP)) {
                 // check again
-                if (node->pin() == 0 && !node->is_dead()) {
+                if (!node->is_dead()) {
                     node->set_flushing(true);
                     flushed_nodes.push_back(node);
                     flushed_size += node->size();
                 } else {
-                    node->write_unlock();
+                    node->unpin();
                 }
             }
         }
@@ -544,7 +564,7 @@ void Cache::write_back()
                 it != nodes_.end(); it++ ) {
                 Node *node = it->second;
 
-                if (node->is_dirty() && node->pin() == 0 
+                if (node->is_dirty()
                     && !node->is_flushing() && !node->is_dead()) {
                     candidates.push_back(node);
                 }
@@ -559,14 +579,14 @@ void Cache::write_back()
                 Node *node = candidates[i];
 
                 // set write lock on node
-                if (node->try_write_lock()) {
+                if (node->try_pin(L_WRITE_CHEAP)) {
                     // check again
-                    if (node->pin() == 0 && !node->is_dead()) {
+                    if (!node->is_dead()) {
                         node->set_flushing(true);
                         flushed_nodes.push_back(node);
                         flushed_size += node->size();
                     } else {
-                        node->write_unlock();
+                        node->unpin();
                     }
                 }
             }
@@ -630,7 +650,7 @@ void Cache::flush_nodes(vector<Node*>& nodes)
         node->set_dirty(false);
 
         // unlock node
-        node->write_unlock();
+        node->unpin();
         
         WriteCompleteContext *context = new WriteCompleteContext();
         context->node = node;

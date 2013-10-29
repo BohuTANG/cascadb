@@ -66,7 +66,7 @@ public:
 
     bool get(const Slice& key, Slice& value);
 
-    InnerNode* root() { return root_; }
+    bool isroot(InnerNode *node) { return node == root_;}
 
 private:
     friend class InnerNode;

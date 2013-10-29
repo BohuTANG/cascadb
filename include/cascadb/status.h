@@ -37,6 +37,10 @@ public:
 
         status_tree_pileup_num = 0U;
         status_tree_collapse_num = 0U;
+
+        status_node_load_from_disk_num = 0U;
+        status_node_load_from_disk_us = 0U;
+        status_node_load_from_mem_num = 0U;
     }
 
 
@@ -100,6 +104,14 @@ public:
 
     // number of tree collapse
     uint64_t status_tree_collapse_num;
+
+    // number of node who read from disk
+    uint64_t status_node_load_from_disk_num;
+
+    uint64_t status_node_load_from_disk_us;
+
+    // number of node who read from memory
+    uint64_t status_node_load_from_mem_num;
 };
 
 }
