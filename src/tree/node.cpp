@@ -85,7 +85,8 @@ void InnerNode::init_empty_root()
 
 Reactivity InnerNode::get_reactivity()
 {
-    if ((pivots_.size() + 1) > tree_->options_.inner_node_children_number)
+    if ((pivots_.size() + 1) >
+            tree_->options_.inner_node_children_number)
         return FISSIBLE;
     else if(pivots_.size() == 0)
         return FUSIBLE;
@@ -93,6 +94,9 @@ Reactivity InnerNode::get_reactivity()
     return STABLE;
 }
 
+// 1. acquire the read-lock
+// 2. write to msgbuf
+// 3. check root reactivity
 bool InnerNode::write(const Msg& m)
 {
     // read lock
@@ -108,15 +112,26 @@ bool InnerNode::write(const Msg& m)
     // read unlock
     unpin();
 
-    maybe_cascade();
+    Reactivity re = get_reactivity();
+    switch (re) {
+    case STABLE:
+        break;
+    case FISSIBLE:
+        pin(L_WRITE_EXPENSIVE);
+        split(NULL);
+        unpin();
+        break;
+    default:
+        maybe_cascade();
+        break;
+    }
+
     return true;
 }
 
+// Requires: none nodes are pinned
 void InnerNode::maybe_cascade()
 {
-    // read lock
-    pin(L_READ);
-
     int idx = -1;
     size_t oldcnt = msgcnt_;
     size_t oldsz = msgbufsz_;
@@ -126,22 +141,20 @@ void InnerNode::maybe_cascade()
     } else if (size() >= tree_->options_.inner_node_page_size) {
         idx = find_msgbuf_maxsz();
     } else {
-        unpin();
         return;
     }
-
     assert(idx >= 0);
 
-    // rise to write lock
-    rlock_rise_to_wlock();
+    // pin parent with write cheap lock
+    pin(L_WRITE_CHEAP);
     if (oldcnt != msgcnt_ || oldsz != msgbufsz_) {
         unpin();
         return;
     }
    
+    bool parent_ispin = true;
     MsgBuf* b = msgbuf(idx);
     bid_t nid = child(idx);
-
     DataNode *node = NULL;
     if (nid == NID_NIL) {
         // cannot be inner node
@@ -153,32 +166,71 @@ void InnerNode::maybe_cascade()
     }
     assert(node);
 
-    // unlock
-    unpin();
+    // pin child with write expensive lock
+    node->pin(L_WRITE_EXPENSIVE);
 
-    node->cascade(b, this);
+    // check child reactivity
+    {
+        // detach cascade msgbuf from parent
+        // clear the bloom filter bits
+        MsgBuf *new_mb = new MsgBuf(tree_->options_.comparator);
+        msgcnt_ -= b->count();
+        msgbufsz_ -= b->size();
+        if (idx == 0) {
+            first_msgbuf_ = new_mb;
+        } else {
+            pivots_[idx - 1].msgbuf = new_mb;
+        }
+        bloomfilter_clear(idx);
 
-    // root node checking
-    if (tree_->isroot(this)) {
-        Reactivity root_re = get_reactivity();
-        if (root_re == FISSIBLE) {
-            split(NULL);
+        Reactivity re_child = node->get_reactivity();
+        if (re_child == STABLE) {
+            parent_ispin = false;
+            unpin();
+        }
+    }
+
+    // do cascade and delete detached msgbuf
+    {
+        node->cascade(b, this);
+        delete b;
+    }
+
+    {
+        // parent is pin
+        if (parent_ispin) {
+            Reactivity re_child = get_reactivity();
+            switch (re_child) {
+            case FISSIBLE:
+                node->split(this);
+                node->unpin();
+                unpin();
+                break;
+
+            case FUSIBLE:
+                //node->merge(this);
+                // TODO:(BohuTANG) maybe innernode call rm_pivot
+                node->unpin();
+                unpin();
+                break;
+
+            default:
+                node->unpin();
+                unpin();
+                node->maybe_cascade();
+                break;
+            }
+        } else {
+            node->unpin();
+            node->maybe_cascade();
         }
     }
 
     node->dec_ref();
 }
 
-// Requires: parent read-lock, node read-lock, msgbuf write-lock
+// Requires: node write-lock
 bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent) {
-    // locks:
-    parent->pin(L_READ);
-    pin(L_READ);
-    mb->write_lock();
-
-    size_t oldcnt = mb->count();
-    size_t oldsz = mb->size();
-
     // status
     ATOMIC_ADD(&tree_->status_->status_innernode_cascade_num, 1);
 
@@ -207,29 +259,7 @@ bool InnerNode::cascade(MsgBuf *mb, InnerNode* parent) {
     }
 
     mb->clear();
-    // clear message buffer and modify parent's status
-    parent->msgcnt_ = parent->msgcnt_ + mb->count() - oldcnt;
-    parent->msgbufsz_ = parent->msgbufsz_ + mb->size() - oldsz;
-
     set_dirty(true);
-
-    // unlocks
-    mb->write_unlock();
-    unpin();
-    parent->unpin();
-
-    maybe_cascade();
-
-    Reactivity re = get_reactivity();
-    switch (re) {
-    case FISSIBLE:
-        split(parent);
-        break;
-    case FUSIBLE:
-        parent->rm_pivot(nid_);
-        break;
-    default:break;
-    }
 
     return true;
 }
@@ -316,7 +346,8 @@ MsgBuf* InnerNode::msgbuf(int idx, Slice& key)
 void InnerNode::bloomfilter_clear(int idx)
 {
     Slice *filter = (idx == 0) ? &first_filter_ : &pivots_[idx-1].filter;
-    filter->clear();
+    if (!filter->empty())
+        filter->clear();
 }
 
 bid_t InnerNode::child(int idx)
@@ -430,11 +461,14 @@ void InnerNode::add_pivot(Slice key, bid_t nid)
     unpin();
 }
 
+void InnerNode::merge(InnerNode *parent)
+{
+    return;
+}
+
+// Requires: parent write-lock, node write-lock
 void InnerNode::split(InnerNode *parent)
 {
-    // try lock
-    if (!try_pin(L_WRITE_CHEAP)) return;
-
     // status
     ATOMIC_ADD(&tree_->status_->status_innernode_split_num, 1);
 
@@ -497,16 +531,10 @@ void InnerNode::split(InnerNode *parent)
     }
     k.destroy();
     ni->dec_ref();
-
-    // unlock
-    unpin();
 }
 
 void InnerNode::rm_pivot(bid_t nid)
 {
-    // lock node
-    pin(L_WRITE_CHEAP);
-
     // status
     ATOMIC_ADD(&tree_->status_->status_innernode_rm_pivot_num, 1);
 
@@ -529,8 +557,6 @@ void InnerNode::rm_pivot(bid_t nid)
             if (tree_->isroot(this))
                 tree_->collapse();
 
-            // unlock
-            unpin();
             return;
         }
 
@@ -563,9 +589,6 @@ void InnerNode::rm_pivot(bid_t nid)
         }
     }
     set_dirty(true);
-
-    // unlock
-    unpin();
 }
 
 bool InnerNode::find(Slice key, Slice& value, InnerNode *parent)
@@ -1024,6 +1047,9 @@ LeafNode::~LeafNode()
     }
 }
 
+// leaf node reactivity just have:
+// 1. FUSIBLE
+// 2. FISSIBLE
 Reactivity LeafNode::get_reactivity()
 {
     if (records_.size() == 0) {
@@ -1038,17 +1064,15 @@ Reactivity LeafNode::get_reactivity()
     return STABLE;
 }
 
-// Requires: parent read-lock, node read-lock, msgbuf write-lock
+
+void LeafNode::maybe_cascade()
+{
+    return;
+}
+
+// Requires
 bool LeafNode::cascade(MsgBuf *mb, InnerNode* parent)
 {
-    // locks:
-    parent->pin(L_READ);
-    pin(L_WRITE_CHEAP);
-    mb->write_lock();
-
-    size_t oldcnt = mb->count();
-    size_t oldsz = mb->size();
-
     // status
     ATOMIC_ADD(&tree_->status_->status_leaf_cascade_num, 1);
 
@@ -1098,28 +1122,8 @@ bool LeafNode::cascade(MsgBuf *mb, InnerNode* parent)
 
     refresh_buckets_info();
     set_dirty(true);
-
-    // clear message buffer
     mb->clear();
-    parent->msgcnt_ = parent->msgcnt_ + mb->count() - oldcnt;
-    parent->msgbufsz_ = parent->msgbufsz_ + mb->size() - oldsz;
 
-    // unlocks
-    mb->write_unlock();
-    unpin();
-    parent->unpin();
-
-    Reactivity re = get_reactivity();
-    switch (re) {
-    case FISSIBLE:
-        split(parent);
-        break;
-    case FUSIBLE:
-        merge(parent);
-        break;
-    default:break;
-    }
-   
     return true;
 }
 
@@ -1187,9 +1191,6 @@ void LeafNode::merge(InnerNode *parent)
         return;
     }
 
-    // lock
-    if (!try_pin(L_WRITE_CHEAP)) return;
-
     // status
     ATOMIC_ADD(&tree_->status_->status_leaf_merge_num, 1);
 
@@ -1223,9 +1224,6 @@ void LeafNode::merge(InnerNode *parent)
 
     assert(parent);
     parent->rm_pivot(nid_);
-
-    // unlock
-    unpin();
 }
 
 bool LeafNode::find(Slice key, Slice& value, InnerNode *parent)

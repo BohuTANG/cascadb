@@ -313,6 +313,12 @@ public:
     // Merge messages cascading from parent
     virtual bool cascade(MsgBuf *mb, InnerNode* parent) = 0;
 
+    virtual void split(InnerNode* parent) = 0;
+
+    virtual void merge(InnerNode *parent) = 0;
+
+    virtual void maybe_cascade() = 0;
+
     // Find values buffered in this node and all descendants
     virtual bool find(Slice key, Slice& value, InnerNode* parent) = 0;
   
@@ -359,6 +365,10 @@ public:
     // get the node's reactivity
     virtual Reactivity get_reactivity();
 
+    virtual void maybe_cascade();
+    virtual void split(InnerNode *parent);
+    virtual void merge(InnerNode *parent);
+
     virtual bool cascade(MsgBuf *mb, InnerNode* parent);
     
     virtual bool find(Slice key, Slice& value, InnerNode* parent);
@@ -397,10 +407,6 @@ protected:
     
     int find_msgbuf_maxcnt();
     int find_msgbuf_maxsz();
-
-    void maybe_cascade();
-    
-    void split(InnerNode *parent);
 
     bool load_msgbuf(int idx);
     bool load_all_msgbuf();
@@ -441,6 +447,10 @@ public:
     // get the node's reactivity
     virtual Reactivity get_reactivity();
 
+    virtual void maybe_cascade();
+    virtual void split(InnerNode *parent);
+    virtual void merge(InnerNode *parent);
+
     virtual bool cascade(MsgBuf *mb, InnerNode* parent);
     
     virtual bool find(Slice key, Slice& value, InnerNode* parent);
@@ -456,9 +466,6 @@ public:
 protected:
     Record to_record(const Msg& msg);
   
-    void split(InnerNode *parent);
-    
-    void merge(InnerNode *parent);
     
     // refresh buckets_info_ after buckets_ is modified
     void refresh_buckets_info();
